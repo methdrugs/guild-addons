@@ -29,7 +29,7 @@
 local _, ns = ...
 
 ns.GUILD = "THÖNDERSTÖRM"
-ns.VERSION = "0.16"
+ns.VERSION = "0.21"
 ns.SCHEMA = 7
 ns.PREFIX = "SKATT"
 ns.GOOD_HOURS = 48

@@ -10,7 +10,8 @@
 --   G          member -> leader: give me a skattenummer
 --   N;number   leader -> member: your skattenummer
 --
--- Professions travel as codes and levels, "MIN97/ENG107"; interests as
+-- Professions travel as codes and levels, "MIN97/ENG107"; since 0.20 with
+-- the cap too, "ENG165-225", for the skill bar (older clients skip it); interests as
 -- letters, "PIL" (PvP, Instanser, Levla, Farma).
 
 local _, ns = ...
@@ -103,15 +104,18 @@ end
 function ns.EncodeProfessions(list)
 	local parts = {}
 	for _, p in ipairs(ns.PROFESSIONS) do
-		if list[p.code] then table.insert(parts, p.code .. list[p.code].rank) end
+		local skill = list[p.code]
+		if skill then
+			table.insert(parts, p.code .. skill.rank .. ((skill.max or 0) > 0 and ("-" .. skill.max) or ""))
+		end
 	end
 	return table.concat(parts, "/")
 end
 
 function ns.DecodeProfessions(text)
 	local list = {}
-	for code, rank in (text or ""):gmatch("(%a+)(%d+)") do
-		if BY_CODE[code] then list[code] = { rank = tonumber(rank) } end
+	for code, rank, max in (text or ""):gmatch("(%a+)(%d+)%-?(%d*)") do
+		if BY_CODE[code] then list[code] = { rank = tonumber(rank), max = tonumber(max) } end
 	end
 	return list
 end

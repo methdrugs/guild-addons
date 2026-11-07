@@ -2,7 +2,9 @@
 -- how many registered members have it (Zach 7/11). Click a profession to
 -- list those who have it, highest level first; click it again to close
 -- the list. The search box finds recipes across the guild (Recipes.lua);
--- click a result to whisper the crafter. Min anmälan shows this
+-- click a result to whisper the crafter. Click a member in a profession's
+-- list to open their recipes in a window like the profession window
+-- (RecipeWindow.lua, Zach 7/11). Min anmälan shows this
 -- character's registration in the same panel, where main or alt and
 -- interests can be changed.
 
@@ -45,6 +47,20 @@ local function Headers(cols)
 		x = x + col[2]
 	end
 	return f
+end
+
+-- Hover a recipe: the item's (or spell's) own tooltip, like the profession window.
+local function RecipeTooltip(self)
+	if not self.link then return end
+	GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+	GameTooltip:SetHyperlink(self.link)
+	GameTooltip:Show()
+end
+
+local function InsertLink(link)
+	if not link then return end
+	if ChatEdit_InsertLink then ChatEdit_InsertLink(link)
+	elseif ChatFrameUtil and ChatFrameUtil.InsertLink then ChatFrameUtil.InsertLink(link) end
 end
 
 local function Whisper(name)
@@ -113,7 +129,13 @@ function ns.BuildRegistry(parent)
 		row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
 		row.cells = Cells(row, COLS)
 		row.found = Cells(row, FOUND_COLS)
-		row:SetScript("OnClick", function(self) if self.whisper then Whisper(self.whisper) end end)
+		row:SetScript("OnClick", function(self)
+			if IsShiftKeyDown() and self.key then InsertLink(ns.RecipeChatLink(self.key))
+			elseif self.member then ns.ShowMember(self.member, filter)
+			elseif self.whisper then Whisper(self.whisper) end
+		end)
+		row:SetScript("OnEnter", RecipeTooltip)
+		row:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		rows[i] = row
 	end
 	page.count = Text(page, "GameFontDisableSmall", "BOTTOMLEFT", 24, 34)
@@ -208,7 +230,7 @@ function ns.RefreshRegistry()
 	if searching then
 		page.listTitle:SetText(string.format("Recept med \"%s\"", search))
 	elseif filter then
-		page.listTitle:SetText(ns.PROFESSION_BY_CODE[filter].label)
+		page.listTitle:SetText(ns.PROFESSION_BY_CODE[filter].label .. "  |cffffffff(klicka på ett namn för att se deras recept)|r")
 	else
 		page.listTitle:SetText("Klicka på ett yrke för att se vilka som har det.")
 	end
@@ -216,7 +238,7 @@ function ns.RefreshRegistry()
 	if searching then page.foundHeaders:Show() else page.foundHeaders:Hide() end
 
 	for i, row in ipairs(rows) do
-		row.whisper = nil
+		row.whisper, row.member, row.key, row.link = nil, nil, nil, nil
 		ShowCells(row.cells, not searching)
 		ShowCells(row.found, searching)
 		if searching then
@@ -228,6 +250,7 @@ function ns.RefreshRegistry()
 				local values = { hit.recipe, who, p and p.label or hit.code }
 				for c, fs in ipairs(row.found) do fs:SetText(values[c]) end
 				row.whisper = hit.online and hit.name or nil
+				row.key, row.link = hit.key, ns.RecipeLink(hit.key)
 				row:Show()
 			else
 				row:Hide()
@@ -238,6 +261,7 @@ function ns.RefreshRegistry()
 			if m then
 				local values = { ns.Number(m.number) or "-", name, levels[name], m.main and "Main" or "Alt", ns.InterestText(m.interests) }
 				for c, fs in ipairs(row.cells) do fs:SetText(values[c]) end
+				row.member = name
 				row:Show()
 			else
 				row:Hide()
@@ -250,7 +274,7 @@ function ns.RefreshRegistry()
 		for name in pairs(db.recipes) do if not roster or roster[name] then sharing = sharing + 1 end end
 		local shown = #found > ROWS and string.format("Visar %d-%d av %d (scrolla med mushjulet). ", offset + 1, math.min(offset + ROWS, #found), #found)
 			or #found == 0 and "Ingen i guildet kan det receptet, eller så har de inte delat sina recept än. " or ""
-		page.count:SetText(shown .. string.format("Klicka på en rad för att viska till den som kan det; grå är offline, skicka post. %d medlemmar delar sina recept.", sharing))
+		page.count:SetText(shown .. string.format("Klicka för att viska, shift-klick länkar i chatten; grå är offline, skicka post. %d medlemmar delar sina recept.", sharing))
 		return
 	end
 	local missing = 0
