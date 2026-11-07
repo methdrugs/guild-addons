@@ -9,8 +9,8 @@ local _, ns = ...
 
 local ROWS, ROW_H = 14, 18
 local MEMBER_COLS = { { "Namn", 140 }, { "Ställning", 170 }, { "Senast betalt", 90 } }
-local LEADER_COLS = { { "Betalt totalt", 110 }, { "Skyldig", 90 }, { "Inkomst", 100 }, { "Banklogg", 90 }, { "Senast sedd", 75 } }
-local MEMBER_W, LEADER_W = 520, 900
+local LEADER_COLS = { { "Betalt totalt", 110 }, { "Skyldig", 90 }, { "Inkomst", 100 }, { "Banklogg", 90 }, { "Senast sedd", 75 }, { "Medborgare", 140 } }
+local MEMBER_W, LEADER_W = 520, 1040
 local ORDER = { top = 1, good = 2, neutral = 3, negative = 4 }
 
 local COLS = {}
@@ -148,12 +148,19 @@ local function Build()
 		ns.Adjust(selected, "F", 0)
 	end)
 	forgive:SetPoint("LEFT", give, "RIGHT", 8, 0)
+	local promote = Button(lead, "Ge Medborgare", 120, function()
+		if not selected then ns.Print("klicka på en medlem först.") return end
+		ns.PromoteToCitizen(selected)
+	end)
+	promote:SetPoint("LEFT", forgive, "RIGHT", 8, 0)
 	frame.lead = lead
 
 	frame.pay = Button(frame, "Betala nu", 100, ns.Pay)
 	frame.pay:SetPoint("BOTTOMLEFT", 24, 18)
 	local refresh = Button(frame, "Uppdatera", 100, function() ns.RequestBoard() ns.RefreshWindow() end)
 	refresh:SetPoint("LEFT", frame.pay, "RIGHT", 8, 0)
+	local professions = Button(frame, "Yrken", 100, ns.ToggleRegistry)
+	professions:SetPoint("LEFT", refresh, "RIGHT", 8, 0)
 	local closeButton = Button(frame, "Stäng", 100, function() frame:Hide() end)
 	closeButton:SetPoint("BOTTOMRIGHT", -24, 18)
 
@@ -231,15 +238,25 @@ function ns.RefreshWindow()
 	offset = math.max(0, math.min(offset, #sorted - ROWS))
 
 	local log = db.bankLog and db.bankLog.sums or {}
+	-- Leader: has the member signed, and do they have the rank Medborgare yet (Zach 7/11)?
+	local ranks, citizen = ns.RosterRanks(), ns.CitizenRankIndex()
+	local CITIZEN = {
+		ok = "|cff40ff40%s, klar|r",
+		promote = "|cffff8000%s, befordra|r",
+		norank = "%s",
+	}
+	local promote = {}
 	for i, row in ipairs(rows) do
 		local name = sorted[i + offset]
 		local m = name and db.members[name]
 		row.name = name
 		if m then
 			local standing = top[name] and ns.TopLabel(top[name]) or ns.LABELS[ns.Standing(m)]
+			local status = ns.CitizenStatus(name, ranks, citizen)
 			local values = {
 				name, standing, ns.Day(m.lastDeposit), ns.Money(m.paid),
 				ns.Money(math.max(m.owed or 0, 0)), ns.Money(m.incomeTotal), log[name] and ns.Money(log[name]) or "-", ns.Day(m.lastSeen),
+				status and string.format(CITIZEN[status], ns.Number(m.number)) or "|cff808080inte anmäld|r",
 			}
 			for c, fs in ipairs(row.cells) do fs:SetText(values[c]) end
 			if leaderMode and name == selected then row:LockHighlight() else row:UnlockHighlight() end
@@ -265,9 +282,17 @@ function ns.RefreshWindow()
 		end
 		local shown = table.concat(missing, ", ", 1, math.min(#missing, 12))
 		if #missing > 12 then shown = shown .. string.format(" och %d till", #missing - 12) end
-		frame.leaderInfo:SetText(string.format("Banklogg %s (bara de senaste insättningarna; öppna banken för att läsa den). Utan addon: %s.",
+		-- Everyone signed but not yet Medborgare, not only the rows on screen.
+		for name in pairs(db.members) do
+			if ranks[name] and ns.CitizenStatus(name, ranks, citizen) == "promote" then table.insert(promote, name) end
+		end
+		table.sort(promote)
+		local citizenText = not citizen and ("Ingen rang heter " .. ns.CITIZEN_RANK .. " i guildet.")
+			or #promote > 0 and ("Befordra till " .. ns.CITIZEN_RANK .. ": " .. table.concat(promote, ", ") .. ".")
+			or ""
+		frame.leaderInfo:SetText(string.format("Banklogg %s (bara de senaste insättningarna; öppna banken för att läsa den). Utan addon: %s. %s",
 			db.bankLog and ("läst " .. date("%d/%m %H:%M", db.bankLog.readAt)) or "inte läst än",
-			#missing == 0 and "inga" or shown))
+			#missing == 0 and "inga" or shown, citizenText))
 	end
 end
 

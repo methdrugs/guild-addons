@@ -81,6 +81,17 @@ function ns.ServeBoard()
 		end
 	end
 	if #chunk > 0 then table.insert(chunks, "E;" .. table.concat(chunk, ";")) end
+	-- Registrations too, so members see professions of those offline.
+	chunk, length = {}, 2
+	for _, row in ipairs(ns.ProfileRows(roster)) do
+		if length + #row + 1 > 250 then
+			table.insert(chunks, "Z;" .. table.concat(chunk, ";"))
+			chunk, length = {}, 2
+		end
+		table.insert(chunk, row)
+		length = length + #row + 1
+	end
+	if #chunk > 0 then table.insert(chunks, "Z;" .. table.concat(chunk, ";")) end
 	for i, msg in ipairs(chunks) do
 		C_Timer.After(i * 0.3, function() ns.Send(msg) end)
 	end

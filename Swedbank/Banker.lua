@@ -144,7 +144,7 @@ local function AddPayment(loan, amount, t, via)
 		for _, p in ipairs(loan.payments) do
 			if p.verified == false and p.amount == amount then
 				p.verified = true
-				ns.Print(string.format("%s hade redan rapporterat %s från gildebanken; den betalningen är nu godkänd.", loan.borrower, ns.Money(amount)))
+				ns.Print(string.format("%s hade redan rapporterat %s från guildbanken; den betalningen är nu godkänd.", loan.borrower, ns.Money(amount)))
 				Settle(loan)
 				return
 			end
@@ -153,7 +153,7 @@ local function AddPayment(loan, amount, t, via)
 	table.insert(loan.payments, { t = t or time(), amount = amount, via = via, verified = not unverified })
 	table.sort(loan.payments, function(a, b) return a.t < b.t end)
 	if unverified then
-		ns.Print(string.format("%s säger sig ha betalat %s till gildebanken på sitt lån; kontrolleras mot bankloggen nästa gång du öppnar gildebanken.",
+		ns.Print(string.format("%s säger sig ha betalat %s till guildbanken på sitt lån; kontrolleras mot bankloggen nästa gång du öppnar guildbanken.",
 			loan.borrower, ns.Money(amount)))
 		SendUpdate(loan)
 		return
@@ -199,14 +199,14 @@ function ns.OnBankPayment(sender, msg)
 		end
 		if manual then
 			manual.linkedPid = pid
-			ns.Print(string.format("%s rapporterade %s från gildebanken; den betalningen har du redan noterat.", sender, ns.Money(amount)))
+			ns.Print(string.format("%s rapporterade %s från guildbanken; den betalningen har du redan noterat.", sender, ns.Money(amount)))
 		elseif loan.status == "approved" then
 			AddPayment(loan, amount, t, "bank")
 		else
 			-- The loan is closed already: keep it on record and say so, rather
 			-- than dropping gold that may be in the bank (review 6/11).
 			table.insert(loan.payments, { t = t, amount = amount, via = "bank", verified = false })
-			ns.Print(string.format("%s rapporterade %s till gildebanken på ett lån som redan är avslutat. Kolla bankloggen och ge tillbaka guldet om det stämmer.",
+			ns.Print(string.format("%s rapporterade %s till guildbanken på ett lån som redan är avslutat. Kolla bankloggen och ge tillbaka guldet om det stämmer.",
 				sender, ns.Money(amount)))
 		end
 	end
@@ -280,7 +280,7 @@ local function NoticeUnlogged()
 				local key = loan.borrower .. d.amount .. ns.Day(d.t)
 				if not d.logged and not noticed[key] then
 					noticed[key] = true
-					ns.Print(string.format("%s satte in %s i gildebanken %s; inte noterad som lånebetalning (kan vara skatt). Se fliken Lån.",
+					ns.Print(string.format("%s satte in %s i guildbanken %s; inte noterad som lånebetalning (kan vara skatt). Se fliken Lån.",
 						loan.borrower, ns.Money(d.amount), ns.Day(d.t)))
 				end
 			end
@@ -372,20 +372,20 @@ local function Detail(loan)
 	if loan.rate then dates = dates .. string.format(" Ränta %g %% i veckan.", loan.rate * 100) end
 	local payments = {}
 	for _, p in ipairs(loan.payments or {}) do
-		table.insert(payments, ns.Day(p.t) .. " " .. ns.Money(p.amount) .. (p.via == "bank" and " (gildebanken)" or "")
+		table.insert(payments, ns.Day(p.t) .. " " .. ns.Money(p.amount) .. (p.via == "bank" and " (guildbanken)" or "")
 			.. (p.verified == false and " |cffff4040(ej kontrollerad)|r" or ""))
 	end
 	local bank
 	if not loan.sentAt then
 		bank = ""
 	elseif not ns.db.bankLog then
-		bank = "Bankloggen är inte läst än; öppna gildebanken."
+		bank = "Bankloggen är inte läst än; öppna guildbanken."
 	else
 		local deposits = {}
 		for _, d in ipairs(BankDeposits(loan)) do
 			table.insert(deposits, ns.Day(d.t) .. " " .. ns.Money(d.amount) .. (d.logged and " (noterad)" or " |cffffd100(inte noterad)|r"))
 		end
-		bank = string.format("Insättningar i gildebanken (loggen läst %s): %s", ns.Day(ns.db.bankLog.readAt),
+		bank = string.format("Insättningar i guildbanken (loggen läst %s): %s", ns.Day(ns.db.bankLog.readAt),
 			#deposits > 0 and table.concat(deposits, ", ") or "inga")
 	end
 	return Warning(loan) .. dates, "Anledning: " .. loan.reason, "Betalningar: " .. (#payments > 0 and table.concat(payments, ", ") or "inga"), bank
@@ -530,7 +530,7 @@ function ns.RefreshBanker()
 			if Overdue(loan) then overdue = overdue + 1 end
 		end
 	end
-	frame.summary:SetText(string.format("%d ansökningar, %d lån igång, %s skyldigt gildet, %d försenade.", pending, active, ns.Money(out), overdue))
+	frame.summary:SetText(string.format("%d ansökningar, %d lån igång, %s skyldigt guildet, %d försenade.", pending, active, ns.Money(out), overdue))
 
 	list:SetColumns(COLS[tab])
 	local rows = Rows()

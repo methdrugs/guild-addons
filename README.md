@@ -1,6 +1,6 @@
 # THÖNDERSTÖRM-addons
 
-Skatteverket (gildeskatt, `/skatt`) och Swedbank (gildelån, `/swedbank`) för WoW Forever. De fungerar bara för medlemmar i THÖNDERSTÖRM; för alla andra gör de ingenting.
+Skatteverket (guildskatt, `/skatt`) och Swedbank (guildlån, `/swedbank`) för WoW Forever. De fungerar bara för medlemmar i THÖNDERSTÖRM; för alla andra gör de ingenting.
 
 ## Installera med WowUp (rekommenderas)
 

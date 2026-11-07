@@ -90,9 +90,9 @@ local function ConfirmPay()
 	loan.outbox = loan.outbox or {}
 	local pid = string.format("%d%03d", time(), math.random(999))
 	loan.outbox[pid] = { amount = pay.amount, t = time() }
-	ns.Print(string.format("betalade %s till gildebanken för ditt lån; %s kvar.", ns.Money(pay.amount), ns.Money(DueNow(loan))))
+	ns.Print(string.format("betalade %s till guildbanken för ditt lån; %s kvar.", ns.Money(pay.amount), ns.Money(DueNow(loan))))
 	local _, online = ns.Leader()
-	if not online then ns.Print("gildeledaren får betalningen när hen loggar in.") end
+	if not online then ns.Print("guildledaren får betalningen när hen loggar in.") end
 	Sync(true)
 	ns.RefreshMember()
 end
@@ -107,7 +107,7 @@ local function SetBank(shown)
 		if GetMoney() <= pendingPay.before - pendingPay.amount then
 			ConfirmPay()
 		else
-			ns.Print("insättningen på " .. ns.Money(pendingPay.amount) .. " gick inte igenom. Försök igen vid gildebanken.")
+			ns.Print("insättningen på " .. ns.Money(pendingPay.amount) .. " gick inte igenom. Försök igen vid guildbanken.")
 			pendingPay = nil
 		end
 	end
@@ -138,7 +138,7 @@ function ns.OnMemberMessage(msg)
 		local loan = ns.char.loans[msg:sub(5)]
 		if loan and loan.status == "sending" then
 			loan.status = "pending"
-			ns.Print("din ansökan om " .. ns.Money(loan.amount) .. " har nått gildeledaren.")
+			ns.Print("din ansökan om " .. ns.Money(loan.amount) .. " har nått guildledaren.")
 		end
 	elseif msg:match("^PACK;") then
 		local pid = msg:sub(6)
@@ -194,9 +194,9 @@ local function Submit()
 	frame.reason:SetText("")
 	local _, online = ns.Leader()
 	if online then
-		ns.Print("ansökan om " .. ns.Money(amount) .. " skickad till gildeledaren.")
+		ns.Print("ansökan om " .. ns.Money(amount) .. " skickad till guildledaren.")
 	else
-		ns.Print("ansökan om " .. ns.Money(amount) .. " sparad; den skickas när gildeledaren loggar in.")
+		ns.Print("ansökan om " .. ns.Money(amount) .. " sparad; den skickas när guildledaren loggar in.")
 	end
 	Sync(true)
 	ns.RefreshMember()
@@ -206,7 +206,7 @@ end
 local function PayBack()
 	local loan = selected and ns.char.loans[selected]
 	if not Active(loan) then ns.Print("klicka på ett aktivt lån först.") return end
-	if not bankOpen then ns.Print("öppna gildebanken först.") return end
+	if not bankOpen then ns.Print("öppna guildbanken först.") return end
 	-- One deposit at a time, so a double click cannot pay twice and record once (review 6/11).
 	if pendingPay then ns.Print("en betalning pågår redan.") return end
 	local amount = ns.ParseMoney(frame.payAmount:GetText())
@@ -233,7 +233,7 @@ local function Build()
 	frame.reason:SetMaxBytes(ns.REASON_BYTES + 1)
 	local submit = ns.Button(frame, "Skicka", 100, Submit)
 	submit:SetPoint("TOPLEFT", 146, -136)
-	ns.Text(frame, "GameFontDisableSmall", "LEFT", submit, "RIGHT", 12, 0):SetText("Bara gildeledaren ser din ansökan och dina lån.")
+	ns.Text(frame, "GameFontDisableSmall", "LEFT", submit, "RIGHT", 12, 0):SetText("Bara guildledaren ser din ansökan och dina lån.")
 
 	ns.Text(frame, "GameFontNormal", "TOPLEFT", 24, -176):SetText("Mina lån")
 	list = ns.List(frame, -196, ROWS, #COLS, W)
@@ -252,7 +252,7 @@ local function Build()
 	ns.Text(frame, "GameFontNormalSmall", "BOTTOMLEFT", 24, 58):SetText("Betala tillbaka")
 	frame.payAmount = ns.Input(frame, 100, PayBack)
 	frame.payAmount:SetPoint("BOTTOMLEFT", 130, 52)
-	frame.pay = ns.Button(frame, "Betala till gildebanken", 170, PayBack)
+	frame.pay = ns.Button(frame, "Betala till guildbanken", 170, PayBack)
 	frame.pay:SetPoint("LEFT", frame.payAmount, "RIGHT", 10, 0)
 	frame.payHint = ns.Text(frame, "GameFontDisableSmall", "LEFT", frame.pay, "RIGHT", 10, 0)
 
@@ -278,7 +278,7 @@ function ns.RefreshMember()
 	local sorted = {}
 	for _, loan in pairs(ns.char.loans) do table.insert(sorted, loan) end
 	-- Open loans first (running, then waiting), newest first within each; the
-	list scrolls with the mouse wheel, so no loan drops out of reach (review 6/11).
+	-- list scrolls with the mouse wheel, so no loan drops out of reach (review 6/11).
 	local order = { approved = 1, pending = 2, sending = 2 }
 	table.sort(sorted, function(a, b)
 		local oa, ob = order[a.status] or 3, order[b.status] or 3
@@ -310,7 +310,7 @@ function ns.RefreshMember()
 		frame.payHint:SetText("")
 	else
 		frame.pay:Disable()
-		frame.payHint:SetText(not Active(loan) and "Klicka på ett aktivt lån." or pendingPay and "Betalningen pågår." or "Öppna gildebanken.")
+		frame.payHint:SetText(not Active(loan) and "Klicka på ett aktivt lån." or pendingPay and "Betalningen pågår." or "Öppna guildbanken.")
 	end
 end
 

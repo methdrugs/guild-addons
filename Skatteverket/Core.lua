@@ -17,6 +17,7 @@
 --   A;id;op;amount     leader -> member: F forgives the debt, C gives credit
 --   K;id               member -> leader: adjustment applied
 --   M;paid;last deposit   leader -> member: restore a lost record
+-- Registration (Y, Z, G, N) is described in Professions.lua.
 --
 -- Saved data survives new versions as long as the folder and the names
 -- SkatteverketDB and SkatteverketCharDB never change. When the shape of
@@ -25,8 +26,8 @@
 local _, ns = ...
 
 ns.GUILD = "THÖNDERSTÖRM"
-ns.VERSION = "0.11"
-ns.SCHEMA = 5
+ns.VERSION = "0.12"
+ns.SCHEMA = 6
 ns.PREFIX = "SKATT"
 ns.GOOD_HOURS = 48
 ns.NEGATIVE_DAYS = 7
@@ -379,7 +380,7 @@ local function Deposit(manual)
 end
 
 function ns.Pay()
-	if not bankOpen then Print("öppna gildebanken först.") return end
+	if not bankOpen then Print("öppna guildbanken först.") return end
 	if pendingDeposit then Print("en betalning pågår redan.") return end
 	if math.floor(char.owed) < 1 then Print("du är inte skyldig något.") return end
 	Deposit(true)
@@ -456,7 +457,7 @@ local function SetBank(shown)
 		if GetMoney() <= pendingDeposit.before - pendingDeposit.amount then
 			ConfirmDeposit()
 		else
-			Print("insättningen på " .. ns.Money(pendingDeposit.amount) .. " gick inte igenom. Tryck Betala nu i /skatt nästa gång du är vid gildebanken.")
+			Print("insättningen på " .. ns.Money(pendingDeposit.amount) .. " gick inte igenom. Tryck Betala nu i /skatt nästa gång du är vid guildbanken.")
 			pendingDeposit = nil
 		end
 	end
@@ -471,7 +472,7 @@ local function OnBlocked(addon)
 	pendingDeposit = nil
 	if auto and not db.autoBlocked then
 		db.autoBlocked = true
-		Print("spelet tillåter inte automatisk betalning. Tryck Betala nu i /skatt vid gildebanken.")
+		Print("spelet tillåter inte automatisk betalning. Tryck Betala nu i /skatt vid guildbanken.")
 	end
 	ns.Changed()
 end
@@ -494,18 +495,18 @@ local function Remind()
 	lastStanding = standing
 	local text
 	if standing == "negative" then
-		text = "|cffff4040din skatt på " .. ns.Money(char.owed) .. " har varit obetald i över en vecka. Du har negativ ställning; besök gildebanken.|r"
+		text = "|cffff4040din skatt på " .. ns.Money(char.owed) .. " har varit obetald i över en vecka. Du har negativ ställning; besök guildbanken.|r"
 	elseif standing == "neutral" then
-		text = "din skatt på " .. ns.Money(char.owed) .. " har varit obetald i över 48 timmar. Besök gildebanken för att få tillbaka god ställning."
+		text = "din skatt på " .. ns.Money(char.owed) .. " har varit obetald i över 48 timmar. Besök guildbanken för att få tillbaka god ställning."
 	elseif not char.lastDeposit and char.owed >= 1 then
-		Print("du har inte betalat någon skatt än; du är skyldig " .. ns.Money(char.owed) .. ". Besök gildebanken.")
+		Print("du har inte betalat någon skatt än; du är skyldig " .. ns.Money(char.owed) .. ". Besök guildbanken.")
 		return
 	else
 		return
 	end
 	Print(text)
 	if RaidNotice_AddMessage and RaidWarningFrame and ChatTypeInfo then
-		RaidNotice_AddMessage(RaidWarningFrame, "Skatteverket: obetald gildeskatt", ChatTypeInfo["RAID_WARNING"])
+		RaidNotice_AddMessage(RaidWarningFrame, "Skatteverket: obetald guildskatt", ChatTypeInfo["RAID_WARNING"])
 	end
 end
 
@@ -517,7 +518,7 @@ end
 local function CheckVersion(v)
 	if not warnedVersion and VersionNumber(v) > VersionNumber(ns.VERSION) then
 		warnedVersion = true
-		Print("det finns en nyare Skatteverket (" .. v .. "); be gildeledaren om den. Din skattehistorik följer med.")
+		Print("det finns en nyare Skatteverket (" .. v .. "); be guildledaren om den. Din skattehistorik följer med.")
 	end
 end
 
@@ -563,7 +564,7 @@ local function Restore(paid, lastDeposit)
 	if not paid or paid <= char.paid then return end
 	char.paid = paid
 	char.lastDeposit = math.max(char.lastDeposit or 0, lastDeposit or 0)
-	Print("din skattehistorik har återställts från gildeledaren: " .. ns.Money(paid) .. " betalt totalt.")
+	Print("din skattehistorik har återställts från guildledaren: " .. ns.Money(paid) .. " betalt totalt.")
 	ns.UpdateSelf()
 	SendStatus()
 end
@@ -575,10 +576,10 @@ function ns.ApplyAdjustment(id, op, amount)
 		local wasGood = ns.Standing(char) == "good"
 		if op == "F" then
 			if char.owed > 0 then char.owed = 0 end
-			Print("gildeledaren har efterskänkt din skatteskuld.")
+			Print("guildledaren har efterskänkt din skatteskuld.")
 		elseif op == "C" and amount then
 			char.owed = char.owed - amount
-			Print("gildeledaren gav dig " .. ns.Money(amount) .. " i skattekredit.")
+			Print("guildledaren gav dig " .. ns.Money(amount) .. " i skattekredit.")
 		end
 		Reconcile()
 		if not wasGood and ns.Standing(char) == "good" then char.goodSince = time() end
@@ -595,11 +596,13 @@ OnWhisper = function(sender, msg)
 	if IsGuildLeader() then
 		if kind == "P" and ns.OnPrivate then ns.OnPrivate(sender, parts)
 		elseif kind == "K" and ns.OnAck then ns.OnAck(sender, parts[2])
+		elseif kind == "G" then ns.OnRegister(sender)
 		end
 	end
 	if sender == ns.Leader() then
 		if kind == "A" then ns.ApplyAdjustment(parts[2], parts[3], tonumber(parts[4]))
 		elseif kind == "M" then Restore(tonumber(parts[2]), tonumber(parts[3]))
+		elseif kind == "N" then ns.OnNumber(tonumber(parts[2]))
 		end
 	end
 end
@@ -626,11 +629,15 @@ local function OnAddonMessage(prefix, msg, channel, sender)
 		C_Timer.After(math.random() * 5, SendStatus)
 	elseif kind == "E" and fromLeader then
 		OnBoard(parts)
+	elseif kind == "Y" then
+		ns.OnProfile(sender, parts)
+	elseif kind == "Z" and fromLeader then
+		ns.OnProfileBoard(parts)
 	elseif kind == "R" and fromLeader then
 		local bp, stamp = tonumber(parts[2]), tonumber(parts[3])
 		if bp and stamp and stamp > db.rateStamp then
 			db.rate, db.rateStamp = bp / 10000, stamp
-			Print(string.format("gildeskatten är nu %g %%.", bp / 100))
+			Print(string.format("guildskatten är nu %g %%.", bp / 100))
 			ns.Changed()
 		end
 	end
@@ -671,6 +678,11 @@ local function Migrate()
 		-- 0.9 kept one clock; what is owed becomes one slice dated by it.
 		char.debts = char.owed >= 1 and { { t = char.debtSince or time(), amount = char.owed } } or {}
 		Reconcile()
+	end
+	if (db.schema or 1) < 6 then
+		-- 0.12 adds registration: skattenummer handed out from 1. Tax data
+		-- stays as it is; everyone, old members too, signs the scroll once.
+		db.nextNumber = db.nextNumber or 1
 	end
 	db.schema, char.schema = ns.SCHEMA, ns.SCHEMA
 end
@@ -769,9 +781,20 @@ SlashCmdList.SKATTEVERKET = function(msg)
 	local cmd, rest = (msg or ""):match("^%s*(%S*)%s*(.-)%s*$")
 	cmd = cmd:lower()
 	-- Swedish words, with the English ones of earlier versions still working.
-	cmd = ({ betala = "pay", sats = "rate", ["efterskänk"] = "forgive", kredit = "credit", synka = "sync", lista = "list" })[cmd] or cmd
+	cmd = ({ betala = "pay", sats = "rate", ["efterskänk"] = "forgive", kredit = "credit", synka = "sync", lista = "list",
+		["anmälan"] = "register", anmalan = "register", yrken = "professions",
+		["hjälp"] = "help", hjalp = "help" })[cmd] or cmd
 	if cmd == "" or cmd == "list" then
 		ns.ToggleWindow()
+	elseif cmd == "register" then
+		ns.ShowScroll()
+	elseif cmd == "help" then
+		ns.ShowHelp()
+	elseif cmd == "yrkestest" then
+		ns.ProfessionTest()
+	elseif cmd == "professions" then
+		if not ns.InOurGuild() then Print("den här karaktären är inte med i " .. ns.GUILD .. ".") return end
+		ns.ToggleRegistry()
 	elseif cmd == "info" then
 		if not ns.InOurGuild() then Print("den här karaktären är inte med i " .. ns.GUILD .. ", inget beskattas.") return end
 		Print(string.format("skattesats %g %%. Skyldig nu %s. Inkomst sedan senaste insättningen %s. Betalt totalt %s. Senaste insättning %s.",
@@ -780,10 +803,10 @@ SlashCmdList.SKATTEVERKET = function(msg)
 	elseif cmd == "pay" then
 		ns.Pay()
 	elseif LEADER_COMMANDS[cmd] then
-		if not IsGuildLeader() then Print("bara gildeledaren kan göra det.") return end
+		if not IsGuildLeader() then Print("bara guildledaren kan göra det.") return end
 		ns.LeaderCommand(cmd, rest)
 	else
-		Print("/skatt öppnar fönstret, /skatt info visar din skatt, /skatt betala betalar vid gildebanken.")
-		Print("Gildeledaren: /skatt sats 5, /skatt efterskänk Namn, /skatt kredit Namn 2g50s, /skatt synka.")
+		Print("/skatt öppnar fönstret, /skatt info visar din skatt, /skatt betala betalar vid guildbanken, /skatt anmälan visar din anmälan, /skatt yrken visar yrkesregistret, /skatt hjälp visar villkor och vanliga frågor.")
+		Print("Guildledaren: /skatt sats 5, /skatt efterskänk Namn, /skatt kredit Namn 2g50s, /skatt synka.")
 	end
 end

@@ -25,7 +25,7 @@
 local _, ns = ...
 
 ns.GUILD = "THÖNDERSTÖRM"
-ns.VERSION = "0.8"
+ns.VERSION = "0.9"
 ns.SCHEMA = 2
 ns.PREFIX = "SWEDBANK"
 ns.WEEK = 7 * 86400

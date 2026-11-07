@@ -1,7 +1,7 @@
 ## Interface: 16001
 ## Title: Swedbank
 ## Notes: Guild loans for THÖNDERSTÖRM: apply in /swedbank; only the guild leader sees applications and loans.
-## Version: 0.8
+## Version: 0.9
 ## SavedVariables: SwedbankDB
 ## SavedVariablesPerCharacter: SwedbankCharDB
 Core.lua
