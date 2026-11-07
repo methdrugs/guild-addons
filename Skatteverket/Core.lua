@@ -26,7 +26,7 @@
 local _, ns = ...
 
 ns.GUILD = "THÖNDERSTÖRM"
-ns.VERSION = "0.13"
+ns.VERSION = "0.14"
 ns.SCHEMA = 6
 ns.PREFIX = "SKATT"
 ns.GOOD_HOURS = 48

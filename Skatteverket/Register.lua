@@ -430,7 +430,7 @@ local function Build()
 
 	y = y - 72
 	Heading(form, "Yrken", x, y)
-	Ink(form, 11, FADED, "TOPLEFT", x + 62, y - 6):SetText("läses av från spelet och uppdateras av sig själva")
+	Ink(form, 11, FADED, "TOPLEFT", x + 62, y - 6):SetText("uppdateras automagiskt! Skatteverket har koll på dig serrö!")
 	for i, p in ipairs(ns.PROFESSIONS) do
 		local col, row = (i - 1) % 9, i <= 9 and 0 or 1
 		local ix = row == 0 and (x + col * 48) or (x + 144 + col * 48)
