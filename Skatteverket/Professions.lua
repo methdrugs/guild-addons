@@ -250,6 +250,7 @@ function ns.OnNumber(number)
 	-- the scroll has faded away when the number comes at once.
 	C_Timer.After(4, function()
 		ns.Print("|cffffd100Grattis, medborgare! Ditt skattenummer är " .. ns.Number(number) .. ".|r")
+		ns.Print("En bild av din anmälan finns i din Screenshots-mapp, visa gärna upp den i Discord!")
 	end)
 	ns.SendProfile()
 	if ns.RefreshScroll then ns.RefreshScroll() end

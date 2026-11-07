@@ -228,6 +228,11 @@ local signing
 local function Complete()
 	signing = nil
 	Stamp()
+	-- A keepsake: a screenshot of the sealed scroll, just after the seal has
+	-- landed (Zach 7/11). It is saved on the member's own computer, in
+	-- the game's Screenshots folder, like any other screenshot.
+	-- Not when the scroll was closed mid-signature: nothing to show.
+	if Screenshot and scroll:IsShown() then C_Timer.After(0.6, Screenshot) end
 	ns.RequestNumber()
 	ns.SendProfile()
 	ns.RefreshScroll()
