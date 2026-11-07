@@ -1,0 +1,9 @@
+## Interface: 16001
+## Title: Skatteverket
+## Notes: Guild tax for THÖNDERSTÖRM: counts looted gold, vendor and auction sales, pays the guild bank, shows everyone's standing in /skatt.
+## Version: 0.11
+## SavedVariables: SkatteverketDB
+## SavedVariablesPerCharacter: SkatteverketCharDB
+Core.lua
+Leader.lua
+Window.lua
