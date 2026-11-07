@@ -1,16 +1,18 @@
--- Skatteverket, the /skatt window in the old dialog style: your own tax at
--- the top, everyone's standing below. Members see no amounts of others, so
--- a low level contributes as much as a high one (Zach 6/11); their list is
--- sorted by standing. The guild leader also sees paid, owed, income, the
--- bank log and last seen, sorted by paid, and can set the rate, give
--- credit or forgive the selected member.
+-- Skatteverket, the /skatt window: a classic panel with two tabs (Zach
+-- 7/11). Skatt has your own tax at the top and everyone's standing below.
+-- Members see no amounts of others, so a low level contributes as much as
+-- a high one (Zach 6/11). Everyone's list, the leader's too, is ranked by
+-- standing: favourites #1-3, then good, neutral, negative (Zach 7/11). The
+-- guild leader also sees paid, owed, income, the bank log and last seen,
+-- with paid deciding the order within a standing, and can set the rate,
+-- give credit or forgive the selected member. Yrken is in Registry.lua.
 
 local _, ns = ...
 
 local ROWS, ROW_H = 14, 18
 local MEMBER_COLS = { { "Namn", 140 }, { "Ställning", 170 }, { "Senast betalt", 90 } }
 local LEADER_COLS = { { "Betalt totalt", 110 }, { "Skyldig", 90 }, { "Inkomst", 100 }, { "Banklogg", 90 }, { "Senast sedd", 75 }, { "Medborgare", 140 } }
-local MEMBER_W, LEADER_W = 520, 1040
+local MEMBER_W, LEADER_W, FRAME_H = 520, 1040, 560
 local ORDER = { top = 1, good = 2, neutral = 3, negative = 4 }
 
 local COLS = {}
@@ -18,7 +20,7 @@ for _, col in ipairs(MEMBER_COLS) do table.insert(COLS, col) end
 for _, col in ipairs(LEADER_COLS) do table.insert(COLS, col) end
 
 local frame, rows, headers, sorted = nil, {}, {}, {}
-local offset, selected, leaderMode = 0, nil, false
+local offset, selected, leaderMode, tab = 0, nil, false, 1
 
 local function Text(parent, template, ...)
 	local fs = parent:CreateFontString(nil, "OVERLAY", template)
@@ -48,18 +50,80 @@ local function SetShown(region, shown)
 	if shown then region:Show() else region:Hide() end
 end
 
-local function Build()
-	frame = CreateFrame("Frame", "SkatteverketFrame", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
-	frame:SetSize(MEMBER_W, 520)
-	frame:SetPoint("CENTER")
-	frame:SetFrameStrata("DIALOG")
-	frame:SetClampedToScreen(true)
-	frame:SetBackdrop({
+-- An unknown template does not always raise an error, it can give a bare
+-- frame; ask the client first where it can tell.
+local function HasTemplate(name)
+	if C_XMLUtil and C_XMLUtil.GetTemplateInfo then return C_XMLUtil.GetTemplateInfo(name) ~= nil end
+	return true
+end
+
+-- The classic panel (Zach 7/11): portrait, title bar and a recessed inset,
+-- like the Character and Social windows. Falls back to the old dialog
+-- look if a client lacks the template.
+local function Panel()
+	local ok, f = false, nil
+	if HasTemplate("ButtonFrameTemplate") then ok, f = pcall(CreateFrame, "Frame", "SkatteverketFrame", UIParent, "ButtonFrameTemplate") end
+	if ok and f then
+		-- Our own seal on a round disc (Media/Portrait.tga, art/seal.sh). The
+		-- first try left an empty circle (screenshot 7/11), so every way the
+		-- template versions name the portrait is tried.
+		local art = "Interface\\AddOns\\Skatteverket\\Media\\Portrait"
+		local portrait = f.portrait or f.Portrait or (f.PortraitContainer and f.PortraitContainer.portrait)
+			or _G["SkatteverketFramePortrait"]
+		if f.SetPortraitToAsset then
+			f:SetPortraitToAsset(art)
+		elseif portrait then
+			portrait:SetTexture(art)
+		end
+		if portrait then portrait:Show() end
+		local title = f.TitleText or (f.TitleContainer and f.TitleContainer.TitleText)
+		if title then title:SetText("Skatteverket") end
+		return f, true
+	end
+	f = CreateFrame("Frame", "SkatteverketFrame", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+	f:SetBackdrop({
 		bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
 		edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
 		tile = true, tileSize = 32, edgeSize = 32,
 		insets = { left = 11, right = 12, top = 12, bottom = 11 },
 	})
+	local header = f:CreateTexture(nil, "ARTWORK")
+	header:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Header")
+	header:SetSize(320, 64)
+	header:SetPoint("TOP", 0, 12)
+	local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	title:SetPoint("TOP", header, "TOP", 0, -14)
+	title:SetText("Skatteverket")
+	local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+	close:SetPoint("TOPRIGHT", -6, -6)
+	return f, false
+end
+
+-- Tabs along the bottom edge, Skatt and Yrken, as on the Character window.
+local function Tab(i, label)
+	local name = "SkatteverketFrameTab" .. i
+	local button
+	for _, template in ipairs({ "CharacterFrameTabButtonTemplate", "PanelTabButtonTemplate" }) do
+		if HasTemplate(template) then
+			local ok, b = pcall(CreateFrame, "Button", name, frame, template)
+			if ok and b then button = b break end
+		end
+	end
+	button = button or Button(frame, label, 90)
+	button:SetID(i)
+	button:SetText(label)
+	if PanelTemplates_TabResize then pcall(PanelTemplates_TabResize, button, 0) end
+	button:SetScript("OnClick", function() ns.ShowTab(i) if PlaySound and SOUNDKIT then PlaySound(SOUNDKIT.IG_CHARACTER_INFO_TAB) end end)
+	return button
+end
+
+local function Build()
+	local classic
+	frame, classic = Panel()
+	frame:SetSize(MEMBER_W, FRAME_H)
+	frame:SetPoint("CENTER")
+	frame:SetFrameStrata("DIALOG")
+	frame:SetClampedToScreen(true)
 	frame:SetMovable(true)
 	frame:EnableMouse(true)
 	frame:RegisterForDrag("LeftButton")
@@ -67,34 +131,30 @@ local function Build()
 	frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
 	tinsert(UISpecialFrames, "SkatteverketFrame")
 
-	local header = frame:CreateTexture(nil, "ARTWORK")
-	header:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Header")
-	header:SetSize(320, 64)
-	header:SetPoint("TOP", 0, 12)
-	local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-	title:SetPoint("TOP", header, "TOP", 0, -14)
-	title:SetText("Skatteverket")
+	-- Beside the portrait, above the inset: the guild bank's last known balance.
+	frame.bank = Text(frame, "GameFontHighlightSmall", "TOPLEFT", classic and 66 or 24, -34)
 
-	local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
-	close:SetPoint("TOPRIGHT", -6, -6)
+	-- Page 1: Skatt.
+	local tax = CreateFrame("Frame", nil, frame)
+	tax:SetAllPoints()
+	frame.tax = tax
+	Text(tax, "GameFontNormal", "TOPLEFT", 24, -70):SetText("Din skatt")
+	frame.mine1 = Text(tax, "GameFontHighlight", "TOPLEFT", 24, -90)
+	frame.mine2 = Text(tax, "GameFontHighlight", "TOPLEFT", 24, -108)
+	frame.mine3 = Text(tax, "GameFontHighlight", "TOPLEFT", 24, -126)
 
-	Text(frame, "GameFontNormal", "TOPLEFT", 24, -34):SetText("Din skatt")
-	frame.mine1 = Text(frame, "GameFontHighlight", "TOPLEFT", 24, -54)
-	frame.mine2 = Text(frame, "GameFontHighlight", "TOPLEFT", 24, -72)
-	frame.mine3 = Text(frame, "GameFontHighlight", "TOPLEFT", 24, -90)
-
-	Text(frame, "GameFontNormal", "TOPLEFT", 24, -118):SetText("Ställning i " .. ns.GUILD)
+	Text(tax, "GameFontNormal", "TOPLEFT", 24, -154):SetText("Ställning i " .. ns.GUILD)
 	local x = 24
 	for c, col in ipairs(COLS) do
-		headers[c] = Text(frame, "GameFontNormalSmall", "TOPLEFT", x, -138)
+		headers[c] = Text(tax, "GameFontNormalSmall", "TOPLEFT", x, -174)
 		headers[c]:SetText(col[1])
 		x = x + col[2]
 	end
 
 	for i = 1, ROWS do
-		local row = CreateFrame("Button", nil, frame)
+		local row = CreateFrame("Button", nil, tax)
 		row:SetHeight(ROW_H)
-		row:SetPoint("TOPLEFT", 20, -152 - (i - 1) * ROW_H)
+		row:SetPoint("TOPLEFT", 20, -188 - (i - 1) * ROW_H)
 		row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
 		row.cells = {}
 		local cx = 4
@@ -113,13 +173,13 @@ local function Build()
 		rows[i] = row
 	end
 
-	frame.count = Text(frame, "GameFontDisableSmall", "TOPLEFT", 24, -410)
-	frame.leaderInfo = Text(frame, "GameFontHighlightSmall", "TOPLEFT", 24, -426)
+	frame.count = Text(tax, "GameFontDisableSmall", "TOPLEFT", 24, -194 - ROWS * ROW_H)
+	frame.leaderInfo = Text(tax, "GameFontHighlightSmall", "TOPLEFT", frame.count, "BOTTOMLEFT", 0, -4)
 	frame.leaderInfo:SetWidth(LEADER_W - 48)
 
-	-- Guild leader controls, one line above the buttons.
-	local lead = CreateFrame("Frame", nil, frame)
-	lead:SetPoint("BOTTOMLEFT", 24, 46)
+	-- Guild leader controls, inside the inset just above its bottom edge.
+	local lead = CreateFrame("Frame", nil, tax)
+	lead:SetPoint("BOTTOMLEFT", 24, 34)
 	lead:SetSize(LEADER_W - 48, 24)
 	local rateLabel = Text(lead, "GameFontNormalSmall", "LEFT", 0, 0)
 	rateLabel:SetText("Skatt %")
@@ -155,20 +215,49 @@ local function Build()
 	promote:SetPoint("LEFT", forgive, "RIGHT", 8, 0)
 	frame.lead = lead
 
-	frame.pay = Button(frame, "Betala nu", 100, ns.Pay)
-	frame.pay:SetPoint("BOTTOMLEFT", 24, 18)
-	local refresh = Button(frame, "Uppdatera", 100, function() ns.RequestBoard() ns.RefreshWindow() end)
-	refresh:SetPoint("LEFT", frame.pay, "RIGHT", 8, 0)
-	local professions = Button(frame, "Yrken", 100, ns.ToggleRegistry)
-	professions:SetPoint("LEFT", refresh, "RIGHT", 8, 0)
-	local closeButton = Button(frame, "Stäng", 100, function() frame:Hide() end)
-	closeButton:SetPoint("BOTTOMRIGHT", -24, 18)
+	-- Buttons in the strip under the inset, as on the Social window.
+	frame.pay = Button(tax, "Betala nu", 100, ns.Pay)
+	frame.pay:SetPoint("BOTTOMLEFT", 8, 4)
+	local refresh = Button(tax, "Uppdatera", 100, function() ns.RequestBoard() ns.RefreshWindow() end)
+	refresh:SetPoint("LEFT", frame.pay, "RIGHT", 4, 0)
+	local closeButton = Button(frame, "Stäng", 90, function() frame:Hide() end)
+	closeButton:SetPoint("BOTTOMRIGHT", -8, 4)
 
-	frame:EnableMouseWheel(true)
-	frame:SetScript("OnMouseWheel", function(_, delta)
+	tax:EnableMouseWheel(true)
+	tax:SetScript("OnMouseWheel", function(_, delta)
 		offset = math.max(0, math.min(offset - delta, #sorted - ROWS))
 		ns.RefreshWindow()
 	end)
+
+	-- Page 2: Yrken, built in Registry.lua.
+	frame.professions = CreateFrame("Frame", nil, frame)
+	frame.professions:SetAllPoints()
+	ns.BuildRegistry(frame.professions)
+
+	-- Page 4: closed until the character has signed (Zach 7/11).
+	local locked = CreateFrame("Frame", nil, frame)
+	locked:SetAllPoints()
+	frame.locked = locked
+	locked.title = Text(locked, "GameFontNormalLarge", "TOP", 0, -120)
+	locked.why = Text(locked, "GameFontHighlight", "TOP", 0, -156)
+	locked.why:SetWidth(400)
+	locked.why:SetJustifyH("CENTER")
+	locked.sign = Button(locked, "Anmäl dig", 140, function() frame:Hide() ns.ShowScroll() end)
+	locked.sign:SetPoint("TOP", -74, -236)
+	local help = Button(locked, "Villkor och hjälp", 140, function() frame:Hide() ns.ShowHelp() end)
+	help:SetPoint("LEFT", locked.sign, "RIGHT", 8, 0)
+
+	-- Page 3: Min anmälan, opened from the Yrken tab; Yrken stays the selected tab.
+	frame.mine = CreateFrame("Frame", nil, frame)
+	frame.mine:SetAllPoints()
+	ns.BuildMine(frame.mine)
+
+	frame.tabs = { Tab(1, "Skatt"), Tab(2, "Yrken") }
+	frame.tabs[1]:SetPoint("TOPLEFT", frame, "BOTTOMLEFT", 12, classic and 2 or 6)
+	frame.tabs[2]:SetPoint("LEFT", frame.tabs[1], "RIGHT", -15, 0)
+	frame.Tabs = frame.tabs
+	if PanelTemplates_SetNumTabs then PanelTemplates_SetNumTabs(frame, #frame.tabs) end
+
 	-- Ages and the Pay button change with time; refresh once a second.
 	frame:SetScript("OnUpdate", function(self, elapsed)
 		self.elapsed = (self.elapsed or 0) + elapsed
@@ -183,7 +272,8 @@ local function Build()
 end
 
 local function Layout()
-	local width = leaderMode and LEADER_W or MEMBER_W
+	-- Both tabs keep the same size, so switching does not jump (Zach 7/11).
+	local width = (leaderMode and not ns.Locked()) and LEADER_W or MEMBER_W
 	frame:SetWidth(width)
 	frame.count:SetWidth(width - 48)
 	for c, fs in ipairs(headers) do SetShown(fs, c <= #MEMBER_COLS or leaderMode) end
@@ -193,11 +283,57 @@ local function Layout()
 	end
 	SetShown(frame.lead, leaderMode)
 	SetShown(frame.leaderInfo, leaderMode)
+	local locked = ns.Locked()
+	frame.lockState = locked
+	SetShown(frame.locked, locked)
+	if locked == "unsigned" then
+		frame.locked.title:SetText("Anmälan saknas")
+		frame.locked.why:SetText("Skatteverket visar bara uppgifter för godkända medborgare. Signera din anmälan, så öppnas allt här när guildledaren har gett dig rangen " .. ns.CITIZEN_RANK .. ": din skatt, guildets ställning, yrken och receptsök.")
+		frame.locked.sign:Enable()
+	elseif locked == "waiting" then
+		frame.locked.title:SetText("Väntar på godkännande")
+		frame.locked.why:SetText("Din anmälan är mottagen. Allt här öppnas när guildledaren har gett dig rangen " .. ns.CITIZEN_RANK .. ".")
+		frame.locked.sign:Disable()
+	end
+	SetShown(frame.tax, tab == 1 and not locked)
+	SetShown(frame.professions, tab == 2 and not locked)
+	SetShown(frame.mine, tab == 3 and not locked)
+	for _, b in ipairs(frame.tabs) do SetShown(b, not locked) end
+	ns.LayoutRegistry(width)
+	local selectedTab = tab == 3 and 2 or tab
+	if PanelTemplates_SetTab then
+		PanelTemplates_SetTab(frame, selectedTab)
+	else
+		for i, b in ipairs(frame.tabs) do if i == selectedTab then b:Disable() else b:Enable() end end
+	end
+end
+
+-- "Guildbanken: 1234g 5s 0c (läst av Namn 07/11 20:44)". Anyone can send
+-- a balance, so it always says who read it.
+local function BankText()
+	local bank = ns.db.bank
+	if not bank then return "Guildbanken: inte läst än. Saldot visas när någon med addonen öppnar banken." end
+	return string.format("Guildbanken: |cffffffff%s|r  (läst av %s %s)", ns.Money(bank.amount),
+		bank.by or "okänd", date("%d/%m %H:%M", bank.at))
 end
 
 function ns.RefreshWindow()
 	if not frame or not frame:IsShown() then return end
 	local db, char = ns.db, ns.char
+	-- Promoted while the window is open: it opens up at once.
+	if ns.Locked() ~= frame.lockState then Layout() end
+	if frame.lockState then
+		frame.bank:SetText("")
+		return
+	end
+	frame.bank:SetText(BankText())
+	if tab == 2 then
+		ns.RefreshRegistry()
+		return
+	elseif tab == 3 then
+		ns.RefreshMine()
+		return
+	end
 	local top = ns.TopPayers()
 
 	if ns.InOurGuild() then
@@ -225,13 +361,12 @@ function ns.RefreshWindow()
 		return top[name] and 0 or ORDER[ns.Standing(db.members[name])]
 	end
 	table.sort(sorted, function(a, b)
+		local ra, rb = Rank(a), Rank(b)
+		if ra ~= rb then return ra < rb end
+		if top[a] and top[b] then return top[a] < top[b] end
 		if leaderMode then
 			local pa, pb = db.members[a].paid or 0, db.members[b].paid or 0
 			if pa ~= pb then return pa > pb end
-		else
-			local ra, rb = Rank(a), Rank(b)
-			if ra ~= rb then return ra < rb end
-			if top[a] and top[b] then return top[a] < top[b] end
 		end
 		return a < b
 	end)
@@ -296,14 +431,24 @@ function ns.RefreshWindow()
 	end
 end
 
-function ns.ToggleWindow()
+function ns.ShowTab(n)
 	if not frame then Build() end
-	if frame:IsShown() then frame:Hide() return end
-	leaderMode = IsGuildLeader() and ns.InOurGuild()
+	tab = n
+	if n == 3 then ns.ResetMine() end
+	if not frame:IsShown() then
+		leaderMode = IsGuildLeader() and ns.InOurGuild()
+		frame:Show()
+		if leaderMode then frame.lead.rate:SetText(string.format("%g", ns.db.rate * 100)) end
+		ns.RequestRoster()
+		ns.RequestBoard()
+	end
 	Layout()
-	frame:Show()
-	if leaderMode then frame.lead.rate:SetText(string.format("%g", ns.db.rate * 100)) end
-	ns.RequestRoster()
-	ns.RequestBoard()
 	ns.RefreshWindow()
+end
+
+-- /skatt and /skatt yrken: open on that tab, or close if it is already showing.
+function ns.ToggleWindow(n)
+	n = n or 1
+	if frame and frame:IsShown() and tab == n then frame:Hide() return end
+	ns.ShowTab(n)
 end

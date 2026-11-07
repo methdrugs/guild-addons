@@ -345,7 +345,7 @@ local function SetFaqTexts()
 	local rate = string.format("%g %%", ns.db.rate * 100)
 	faqTexts.pay:SetText("Skatten, i dag " .. rate .. ", dras på guld du lootar och säljer till handlare eller på auktionshuset. Questbelöningar, post och byten beskattas aldrig. När du öppnar guildbanken betalas skatten av sig själv om du har hela beloppet på dig; annars trycker du Betala nu i /skatt.")
 	faqTexts.standing:SetText("God: inget obetalt i mer än 48 timmar. Neutral: obetalt upp till en vecka. Negativ: obetalt i en vecka eller mer. Skatteverkets favorit #1-3 går till de längsta obrutna perioderna i god ställning. Guildet ser din ställning, beloppen ser bara guildledaren.")
-	faqTexts.commands:SetText("/skatt - din skatt och allas ställning\n/skatt betala - betala vid guildbanken\n/skatt info - din skatt i chatten\n/skatt anmälan - din anmälan\n/skatt yrken - yrkesregistret\n/skatt hjälp - den här sidan\n/swedbank - låna guld av guildet")
+	faqTexts.commands:SetText("/skatt - din skatt och allas ställning\n/skatt betala - betala vid guildbanken\n/skatt info - din skatt i chatten\n/skatt anmälan - din anmälan\n/skatt yrken - fliken Yrken: vilka som har vilket yrke\n/skatt hjälp - den här sidan\n/swedbank - låna guld av guildet")
 	faqTexts.loans:SetText("Swedbank lånar ut guld med ränta per vecka. Ansök i /swedbank; bara guildledaren ser vem som har lånat.")
 	faqTexts.citizen:SetText("När du har signerat får du ett skattenummer, och guildledaren ger dig rangen Medborgare.")
 end

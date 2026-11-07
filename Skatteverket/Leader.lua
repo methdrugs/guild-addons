@@ -95,6 +95,8 @@ function ns.ServeBoard()
 	for i, msg in ipairs(chunks) do
 		C_Timer.After(i * 0.3, function() ns.Send(msg) end)
 	end
+	-- And the guild bank's last known balance, with who read it.
+	C_Timer.After((#chunks + 1) * 0.3, ns.SendBank)
 end
 
 -- The exact member or roster name for what the leader typed.

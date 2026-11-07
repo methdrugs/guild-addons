@@ -12,12 +12,15 @@
 --   Q                                                       leader: everyone send your figures
 --   R;rate in basis points;stamp                            leader: the tax rate
 --   E;name,last deposit,debt since,last seen,good since,has paid;...   leader: standings
+--   V;copper;server time[;reader]   the guild bank's balance, sent by whoever opened
+--                                   the bank; the leader adds who read it when relaying
 -- Whispers between a member and the leader, with amounts:
 --   P;version;income total;paid;owed;last deposit;income since;rate stamp;debt since;good since
 --   A;id;op;amount     leader -> member: F forgives the debt, C gives credit
 --   K;id               member -> leader: adjustment applied
 --   M;paid;last deposit   leader -> member: restore a lost record
--- Registration (Y, Z, G, N) is described in Professions.lua.
+-- Registration (Y, Z, G, N) is described in Professions.lua, recipe search
+-- (W, J, U) in Recipes.lua.
 --
 -- Saved data survives new versions as long as the folder and the names
 -- SkatteverketDB and SkatteverketCharDB never change. When the shape of
@@ -26,8 +29,8 @@
 local _, ns = ...
 
 ns.GUILD = "THÖNDERSTÖRM"
-ns.VERSION = "0.14"
-ns.SCHEMA = 6
+ns.VERSION = "0.16"
+ns.SCHEMA = 7
 ns.PREFIX = "SKATT"
 ns.GOOD_HOURS = 48
 ns.NEGATIVE_DAYS = 7
@@ -223,6 +226,20 @@ end
 
 function ns.TopLabel(place)
 	return string.format("|cffff8000Skatteverkets favorit #%d|r", place)
+end
+
+-- /skatt is closed until the character is approved (Zach 7/11): signed,
+-- and given the rank Medborgare or higher by the leader. "unsigned" or
+-- "waiting" while closed, nil when open. The guild leader always gets in;
+-- a guild without a Medborgare rank lets the signed in. Paying and the
+-- help page stay open.
+function ns.Locked()
+	if IsGuildLeader() then return nil end
+	if not (char and char.reg) then return "unsigned" end
+	local citizen = ns.CitizenRankIndex()
+	local _, _, rankIndex = GetGuildInfo("player")
+	if citizen and rankIndex and rankIndex > citizen then return "waiting" end
+	return nil
 end
 
 function ns.Changed()
@@ -448,10 +465,52 @@ end
 hooksecurefunc("TakeInboxMoney", OnTakeMail)
 if AutoLootMailItem then hooksecurefunc("AutoLootMailItem", OnTakeMail) end
 
+-- The guild bank's balance, which the game gives only while the bank is
+-- open (Zach 7/11). Not a member's own amount, so everyone may see it; it
+-- always names who read it, since any client can send one.
+local bankSendAt = 0
+function ns.Now()
+	return GetServerTime and GetServerTime() or time()
+end
+
+function ns.SendBank()
+	local bank = db.bank
+	if bank then ns.Send(string.format("V;%d;%d;%s", bank.amount, bank.at, bank.by or "")) end
+end
+
+local function ReadBank()
+	if not bankOpen or not GetGuildBankMoney or not ns.InOurGuild() then return end
+	local amount = GetGuildBankMoney()
+	-- 0 before the bank has loaded; a guild bank that is truly empty shows as unread.
+	if not amount or amount <= 0 then return end
+	local changed = not db.bank or db.bank.amount ~= amount
+	db.bank = { amount = amount, at = ns.Now(), by = ns.Me() or UnitName("player") }
+	ns.Changed()
+	-- One message a few seconds after the last change, and none for an unchanged balance.
+	if changed then
+		bankSendAt = GetTime() + 3
+		C_Timer.After(3.1, function()
+			if GetTime() >= bankSendAt then ns.SendBank() end
+		end)
+	end
+end
+
+local function OnBankBalance(sender, parts)
+	local amount, at = tonumber(parts[2]), tonumber(parts[3])
+	if not amount or not at or amount < 0 or at > ns.Now() + 300 then return end
+	if db.bank and db.bank.at >= at then return end
+	-- Only the leader may name another reader; anyone else is the reader.
+	local by = sender
+	if sender == ns.Leader() and parts[4] and parts[4] ~= "" then by = parts[4] end
+	db.bank = { amount = amount, at = at, by = by }
+	ns.Changed()
+end
+
 local function SetBank(shown)
 	bankOpen = shown
 	if shown then
 		C_Timer.After(1, function() Deposit(false) end)
+		C_Timer.After(2, ReadBank)
 		if ns.OnBankOpened then ns.OnBankOpened() end
 	elseif pendingDeposit then
 		if GetMoney() <= pendingDeposit.before - pendingDeposit.amount then
@@ -629,6 +688,14 @@ local function OnAddonMessage(prefix, msg, channel, sender)
 		C_Timer.After(math.random() * 5, SendStatus)
 	elseif kind == "E" and fromLeader then
 		OnBoard(parts)
+	elseif kind == "V" and ns.Online(sender) ~= nil then
+		OnBankBalance(sender, parts)
+	elseif kind == "W" then
+		ns.OnRecipes(sender, parts)
+	elseif kind == "J" then
+		ns.OnRecipeRequest(sender, parts[2])
+	elseif kind == "U" and fromLeader then
+		ns.OnRelayedRecipes(parts)
 	elseif kind == "Y" then
 		ns.OnProfile(sender, parts)
 	elseif kind == "Z" and fromLeader then
@@ -684,6 +751,9 @@ local function Migrate()
 		-- stays as it is; everyone, old members too, signs the scroll once.
 		db.nextNumber = db.nextNumber or 1
 	end
+	-- 0.15 keeps the guild bank's last known balance in db.bank, empty until
+	-- someone reads it, and every member's recipes in db.recipes and this
+	-- character's own in char.recipes (both made in Init).
 	db.schema, char.schema = ns.SCHEMA, ns.SCHEMA
 end
 
@@ -694,6 +764,7 @@ local function Init()
 	db.rateStamp = db.rateStamp or 0
 	db.members = db.members or {}
 	db.pending = db.pending or {}
+	db.recipes = db.recipes or {}
 	SkatteverketCharDB = SkatteverketCharDB or {}
 	char = SkatteverketCharDB
 	char.incomeTotal = char.incomeTotal or 0
@@ -703,6 +774,7 @@ local function Init()
 	char.firstSeen = char.firstSeen or time()
 	char.applied = char.applied or {}
 	char.debts = char.debts or {}
+	char.recipes = char.recipes or {}
 	ns.db, ns.char = db, char
 	Migrate()
 end
@@ -712,7 +784,7 @@ for _, event in ipairs({
 	"ADDON_LOADED", "PLAYER_LOGIN", "PLAYER_MONEY", "CHAT_MSG_MONEY", "CHAT_MSG_ADDON", "GUILD_ROSTER_UPDATE",
 	"LOOT_OPENED", "LOOT_CLOSED", "QUEST_FINISHED",
 	"MERCHANT_SHOW", "MERCHANT_CLOSED", "MAIL_SHOW", "MAIL_CLOSED", "TRADE_SHOW", "TRADE_CLOSED",
-	"GUILDBANKFRAME_OPENED", "GUILDBANKFRAME_CLOSED",
+	"GUILDBANKFRAME_OPENED", "GUILDBANKFRAME_CLOSED", "GUILDBANK_UPDATE_MONEY",
 	"PLAYER_INTERACTION_MANAGER_FRAME_SHOW", "PLAYER_INTERACTION_MANAGER_FRAME_HIDE",
 	"MAIL_INBOX_UPDATE", "ADDON_ACTION_BLOCKED", "ADDON_ACTION_FORBIDDEN",
 }) do
@@ -767,6 +839,7 @@ events:SetScript("OnEvent", function(_, event, ...)
 	elseif event == "TRADE_CLOSED" then tradeOpen = false
 	elseif event == "GUILDBANKFRAME_OPENED" then SetBank(true)
 	elseif event == "GUILDBANKFRAME_CLOSED" then SetBank(false)
+	elseif event == "GUILDBANK_UPDATE_MONEY" then ReadBank()
 	elseif event == "PLAYER_INTERACTION_MANAGER_FRAME_SHOW" then Interaction(..., true)
 	elseif event == "PLAYER_INTERACTION_MANAGER_FRAME_HIDE" then Interaction(..., false)
 	elseif ns.OnEvent then ns.OnEvent(event, ...)
@@ -792,10 +865,15 @@ SlashCmdList.SKATTEVERKET = function(msg)
 		ns.ShowHelp()
 	elseif cmd == "yrkestest" then
 		ns.ProfessionTest()
+	elseif cmd == "recepttest" then
+		ns.RecipeTest()
 	elseif cmd == "professions" then
 		if not ns.InOurGuild() then Print("den här karaktären är inte med i " .. ns.GUILD .. ".") return end
-		ns.ToggleRegistry()
+		ns.ToggleWindow(2)
 	elseif cmd == "info" then
+		local locked = ns.Locked()
+		if locked == "unsigned" then Print("anmäl dig till Skatteverket först: /skatt anmälan.") return end
+		if locked == "waiting" then Print("din anmälan väntar på att guildledaren ger dig rangen " .. ns.CITIZEN_RANK .. ".") return end
 		if not ns.InOurGuild() then Print("den här karaktären är inte med i " .. ns.GUILD .. ", inget beskattas.") return end
 		Print(string.format("skattesats %g %%. Skyldig nu %s. Inkomst sedan senaste insättningen %s. Betalt totalt %s. Senaste insättning %s.",
 			db.rate * 100, ns.Money(char.owed), ns.Money(char.incomeSince), ns.Money(char.paid),
