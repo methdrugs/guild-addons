@@ -223,9 +223,11 @@ local function FadeOut(delay)
 	end)
 end
 
--- The registration itself; runs even if the scroll is closed mid-signature.
+-- The registration itself; runs even if the scroll is closed mid-signature,
+-- and only once: a member saw the seal come down over and over (8/11).
 local signing
 local function Complete()
+	if not signing then return end
 	signing = nil
 	Stamp()
 	-- A keepsake: a screenshot of the sealed scroll, just after the seal has
@@ -261,8 +263,8 @@ local function Sign()
 	local sig = scroll.signature
 	sig:SetText(me)
 	if not sig.SetAlphaGradient then
-		Complete()
 		FadeOut(3)
+		Complete()
 		return
 	end
 	local t = 0
@@ -270,8 +272,11 @@ local function Sign()
 	scroll:SetScript("OnUpdate", function(self, elapsed)
 		t = t + elapsed
 		if sig:SetAlphaGradient(t * 14, 12) then return end
-		Complete()
+		-- The fade replaces this loop before Complete runs, so an error in
+		-- Complete cannot run it again every frame: that restarted the seal
+		-- and took a screenshot each time (8/11).
 		FadeOut(3)
+		Complete()
 	end)
 end
 
@@ -528,7 +533,7 @@ function ns.RefreshScroll()
 	local reg = ns.char.reg
 	local me = ns.Me() or UnitName("player")
 	scroll.name:SetText(me)
-	scroll.who:SetText(string.format("Nivå %d %s %s", UnitLevel("player"), UnitRace("player") or "", UnitClass("player") or ""))
+	scroll.who:SetText(string.format("Level %d %s %s", UnitLevel("player"), UnitRace("player") or "", UnitClass("player") or ""))
 
 	local have = ns.ReadProfessions()
 	for _, b in ipairs(icons) do

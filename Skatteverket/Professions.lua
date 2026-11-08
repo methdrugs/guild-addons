@@ -288,10 +288,42 @@ function ns.ProfileRows(roster)
 	return rows
 end
 
+-- This character's registration was lost from its own saved data (Zach
+-- 8/11, after many tests) but the guild's record still has its
+-- skattenummer: take it back quietly, with no scroll and nothing said in
+-- guild chat. The number comes only from the leader, so nobody can sign
+-- themselves up this way.
+local function RestoreRegistration()
+	local me = ns.Me()
+	local m = me and ns.db.members[me]
+	if not m or (m.number or 0) < 1 then return false end
+	ns.char.reg = { at = m.profileAt or m.firstSeen or time(), main = m.main ~= false, interests = m.interests or "", number = m.number }
+	ns.Print("din anmälan (" .. ns.Number(m.number) .. ") är återställd från guildets register.")
+	ns.SendProfile()
+	ns.Changed()
+	return true
+end
+
+-- The guild leader only: count as signed without the scroll and without
+-- the line in guild chat (Zach 8/11). The skattenummer is handed out as usual.
+function ns.SignQuietly()
+	if not IsGuildLeader() then ns.Print("bara guildledaren kan göra det.") return end
+	if ns.char.reg then ns.Print("du är redan anmäld.") return end
+	if RestoreRegistration() then return end
+	ns.char.reg = { at = time(), main = true, interests = "" }
+	ns.Print("du är anmäld, utan något i guildchatten.")
+	ns.RequestNumber()
+	ns.SendProfile()
+	ns.Changed()
+end
+
 local shownThisSession = false
 local function OfferScroll()
 	if shownThisSession or ns.char.reg or not ns.InOurGuild() then return end
+	-- Wait for the roster: the full name is needed to look up the record.
+	if not ns.Me() then return end
 	shownThisSession = true
+	if RestoreRegistration() then return end
 	ns.ShowScroll()
 end
 

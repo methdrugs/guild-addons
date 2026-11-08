@@ -12,7 +12,7 @@ local _, ns = ...
 
 local ROWS, ROW_H = 12, 18
 local CELL_W, CELL_H = 158, 38
-local COLS = { { "Nr", 70 }, { "Namn", 170 }, { "Nivå", 50 }, { "Typ", 50 }, { "Intressen", 130 } }
+local COLS = { { "Nr", 70 }, { "Namn", 170 }, { "Level", 50 }, { "Typ", 50 }, { "Intressen", 130 } }
 local FOUND_COLS = { { "Recept", 200 }, { "Namn", 160 }, { "Yrke", 110 } }
 
 local page, rows, cells, sorted, found = nil, {}, {}, {}, {}

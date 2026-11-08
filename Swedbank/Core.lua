@@ -1,4 +1,5 @@
--- Swedbank: guild loans for THÖNDERSTÖRM on WoW Forever.
+-- Swedbank: guild loans for THÖNDERSTÖRM on WoW Forever. Its pages live in
+-- the THÖNDERSTÖRM panel that Skatteverket owns (0.10, Zach 8/11).
 -- A member fills in an application (amount, reason, repay by). It goes by
 -- hidden whisper to the guild leader only, never over the guild channel.
 -- The leader approves it with a weekly rate, sends the gold by mail, logs
@@ -25,7 +26,7 @@
 local _, ns = ...
 
 ns.GUILD = "THÖNDERSTÖRM"
-ns.VERSION = "0.9"
+ns.VERSION = "0.10"
 ns.SCHEMA = 2
 ns.PREFIX = "SWEDBANK"
 ns.WEEK = 7 * 86400
@@ -210,36 +211,47 @@ function ns.Due(loan, now)
 	return left, interest, left + interest
 end
 
--- The shared dialog look: the old gold-edged box with a header plate.
-function ns.Dialog(name, width, height, title)
-	local f = CreateFrame("Frame", name, UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
-	f:SetSize(width, height)
-	f:SetPoint("CENTER")
-	f:SetFrameStrata("DIALOG")
-	f:SetClampedToScreen(true)
-	f:SetBackdrop({
-		bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
-		edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
-		tile = true, tileSize = 32, edgeSize = 32,
-		insets = { left = 11, right = 12, top = 12, bottom = 11 },
-	})
-	f:SetMovable(true)
-	f:EnableMouse(true)
-	f:RegisterForDrag("LeftButton")
-	f:SetScript("OnDragStart", f.StartMoving)
-	f:SetScript("OnDragStop", f.StopMovingOrSizing)
-	tinsert(UISpecialFrames, name)
-	local header = f:CreateTexture(nil, "ARTWORK")
-	header:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Header")
-	header:SetSize(320, 64)
-	header:SetPoint("TOP", 0, 12)
-	local text = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-	text:SetPoint("TOP", header, "TOP", 0, -14)
-	text:SetText(title)
-	local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
-	close:SetPoint("TOPRIGHT", -6, -6)
-	f:Hide()
-	return f
+-- Bookmark tabs on the right edge of the THÖNDERSTÖRM panel, like the
+-- spellbook's (Zach 8/11: Swedbank's pages on the side). entries are
+-- { icon, tooltip }; onClick(i). Parented to page, so they hide with it.
+function ns.SideTabs(page, panel, entries, onClick)
+	local tabs = {}
+	for i, entry in ipairs(entries) do
+		local tab = CreateFrame("CheckButton", nil, page)
+		tab:SetSize(32, 32)
+		tab:SetPoint("TOPLEFT", panel, "TOPRIGHT", 0, -60 - (i - 1) * 48)
+		local back = tab:CreateTexture(nil, "BACKGROUND")
+		back:SetTexture("Interface\\SpellBook\\SpellBook-SkillLineTab")
+		back:SetSize(64, 64)
+		back:SetPoint("TOPLEFT", -3, 11)
+		tab:SetNormalTexture("Interface\\Icons\\" .. entry[1])
+		-- Glow textures by hand with additive blending, as on the scroll:
+		-- given by path the checked one drew plain (Skatteverket, 7/11).
+		local glow = tab:CreateTexture(nil, "HIGHLIGHT")
+		glow:SetTexture("Interface\\Buttons\\ButtonHilight-Square")
+		glow:SetBlendMode("ADD")
+		glow:SetAllPoints()
+		local checked = tab:CreateTexture(nil, "OVERLAY")
+		checked:SetTexture("Interface\\Buttons\\CheckButtonHilight")
+		checked:SetBlendMode("ADD")
+		checked:SetAllPoints()
+		tab:SetCheckedTexture(checked)
+		tab:SetScript("OnClick", function()
+			onClick(i)
+			if PlaySound and SOUNDKIT then PlaySound(SOUNDKIT.IG_ABILITY_PAGE_TURN) end
+		end)
+		tab:SetScript("OnEnter", function(self)
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			GameTooltip:AddLine(entry[2])
+			GameTooltip:Show()
+		end)
+		tab:SetScript("OnLeave", function() GameTooltip:Hide() end)
+		tabs[i] = tab
+	end
+	function tabs.Select(n)
+		for i, tab in ipairs(tabs) do tab:SetChecked(i == n) end
+	end
+	return tabs
 end
 
 function ns.Text(parent, template, ...)
@@ -385,12 +397,32 @@ events:SetScript("OnEvent", function(_, event, ...)
 end)
 
 SLASH_SWEDBANK1 = "/swedbank"
-SlashCmdList.SWEDBANK = function()
+-- Swedbank has no window of its own since 0.10: its pages are the Swedbank
+-- tab of the THÖNDERSTÖRM panel, which Skatteverket owns (Zach 8/11).
+-- Skatteverket builds the tab with SwedbankPanel when the panel first opens.
+SwedbankPanel = {}
+function SwedbankPanel.Build(page, panel)
+	ns.BuildMember(page, panel)
+	ns.BuildBanker(page, panel)
+end
+-- The leader's pages or the member's, whichever this character needs now.
+function SwedbankPanel.Refresh()
+	local leader = IsGuildLeader()
+	ns.ShowBanker(leader)
+	ns.ShowMember(not leader)
+	if leader then ns.RefreshBanker() else ns.RefreshMember() end
+end
+SwedbankPanel.VERSION = ns.VERSION
+function SwedbankPanel.HasLoan() return ns.HasLoan() end
+
+-- /swedbank opens the panel on the Swedbank tab, /swedbank nytt on Nytt.
+SlashCmdList.SWEDBANK = function(msg)
+	local news = (msg or ""):lower():match("^%s*nytt%s*$")
 	if not ns.InOurGuild() then
 		Print("den här karaktären är inte med i " .. ns.GUILD .. ".")
-	elseif IsGuildLeader() then
-		ns.ToggleBanker()
+	elseif not SkatteverketAPI then
+		Print("Swedbank kräver Skatteverket.")
 	else
-		ns.ToggleMember()
+		SkatteverketAPI.Toggle(news and "news" or "swedbank")
 	end
 end

@@ -70,8 +70,8 @@ function ns.ServeBoard()
 	for name, m in pairs(ns.db.members) do
 		-- Only people in the guild now.
 		if not roster or roster[name] then
-			local row = string.format("%s,%d,%d,%d,%d,%d", name, m.lastDeposit or 0, m.debtSince or 0,
-				m.lastSeen or 0, m.goodSince or 0, m.hasPaid and 1 or 0)
+			local row = string.format("%s,%d,%d,%d,%d,%d,%s,%s", name, m.lastDeposit or 0, m.debtSince or 0,
+				m.lastSeen or 0, m.goodSince or 0, m.hasPaid and 1 or 0, m.version or "", m.swed or "")
 			if length + #row + 1 > 250 then
 				table.insert(chunks, "E;" .. table.concat(chunk, ";"))
 				chunk, length = {}, 2
@@ -129,6 +129,41 @@ function ns.Adjust(name, op, amount)
 	ns.Changed()
 end
 
+-- Guild repairs paid from the bank, read from the money log on the leader's
+-- own visits only; nothing is sent (Zach 8/11). The log holds only the
+-- latest transactions, so each read is laid against the one before and
+-- only the transactions after the overlap are new. Which end of the log is
+-- newest is not known on Forever, so both ways are tried and the longer
+-- overlap wins. Repairs that scroll out between two visits are missed.
+local function Overlap(old, new, oldTail)
+	for k = math.min(#old, #new), 1, -1 do
+		local same = true
+		for i = 1, k do
+			local a = oldTail and old[#old - k + i] or old[i]
+			local b = oldTail and new[i] or new[#new - k + i]
+			if a ~= b then same = false break end
+		end
+		if same then return k end
+	end
+	return 0
+end
+
+local function CountRepairs(entries)
+	local db = ns.db
+	db.repairs = db.repairs or {}
+	local old = db.moneyLog or {}
+	local tail, head = Overlap(old, entries, true), Overlap(old, entries, false)
+	local first, last
+	if tail >= head then first, last = tail + 1, #entries else first, last = 1, #entries - head end
+	for i = first, last do
+		local kind, name, amount = strsplit("|", entries[i])
+		if kind == "repair" and name ~= "" then
+			db.repairs[name] = (db.repairs[name] or 0) + (tonumber(amount) or 0)
+		end
+	end
+	db.moneyLog = entries
+end
+
 -- The guild bank keeps only the latest money transactions; sum the deposits in it.
 function ns.OnBankOpened()
 	if not IsGuildLeader() or not QueryGuildBankLog then return end
@@ -147,9 +182,10 @@ function ns.OnEvent(event)
 				if p.via == "bank" then table.insert(repayments, { name = loan.borrower, amount = p.amount, t = p.t }) end
 			end
 		end
-		local sums, now = {}, time()
+		local sums, now, entries = {}, time(), {}
 		for i = 1, GetNumGuildBankMoneyTransactions() do
 			local kind, name, amount, years, months, days, hours = GetGuildBankMoneyTransaction(i)
+			table.insert(entries, string.format("%s|%s|%d", kind or "", name and ns.Short(name) or "", amount or 0))
 			if kind == "deposit" and name then
 				name = ns.Short(name)
 				local t = now - (((years or 0) * 365 + (months or 0) * 30 + (days or 0)) * 24 + (hours or 0)) * 3600
@@ -164,6 +200,7 @@ function ns.OnEvent(event)
 			end
 		end
 		ns.db.bankLog = { readAt = now, sums = sums }
+		CountRepairs(entries)
 		ns.Changed()
 	elseif event == "GUILD_ROSTER_UPDATE" then
 		ns.Changed()

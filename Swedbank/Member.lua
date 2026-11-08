@@ -1,15 +1,17 @@
--- Swedbank, the member's side: the application form and "My loans", where
--- a running loan can be paid back straight into the guild bank.
+-- Swedbank, the member's side, on the Swedbank tab of the THÖNDERSTÖRM
+-- panel with two bookmark tabs on its right edge (Zach 8/11): Ansök, the
+-- application form, open only in good standing with Skatteverket; and Mina
+-- lån, where a running loan can be paid back straight into the guild bank.
 -- Applications and payments wait in this character's saved data until the
 -- guild leader has confirmed them, so nothing is lost if the leader is
 -- offline.
 
 local _, ns = ...
 
-local ROWS, W, H = 8, 600, 470
-local COLS = { { "Ansökt", 70 }, { "Belopp", 100 }, { "Status", 160 }, { "Ränta", 60 }, { "Att betala", 100 }, { "Betala senast", 80 } }
+local ROWS, W = 14, 520
+local COLS = { { "Ansökt", 55 }, { "Belopp", 85 }, { "Status", 150 }, { "Ränta", 45 }, { "Kvar", 85 }, { "Senast", 60 } }
 local frame, list, selected
-local offset = 0
+local offset, tab = 0, 2
 local lastSync, synced = 0, false
 local bankOpen, pendingPay = false, nil
 
@@ -177,7 +179,21 @@ function ns.OnMemberMessage(msg)
 	ns.RefreshMember()
 end
 
+-- Applying takes good standing with Skatteverket (Zach 8/11); paying back never does.
+-- Only an approved member applies (Zach 8/11); someone not approved sees
+-- this page only because a loan is running.
+local function MayApply()
+	if not SkatteverketAPI or SkatteverketAPI.Locked() then return false, "locked" end
+	local standing = SkatteverketAPI.Standing()
+	return standing == "good", standing
+end
+
 local function Submit()
+	local may, why = MayApply()
+	if not may then
+		ns.Print(why == "locked" and "du behöver vara godkänd medborgare för att ansöka om lån." or "du behöver God ställning hos Skatteverket för att ansöka om lån.")
+		return
+	end
 	local amount = ns.ParseMoney(frame.amount:GetText())
 	if not amount or amount < 1 then ns.Print("skriv ett belopp, till exempel 50g.") return end
 	local repayBy, repayText = 0, frame.repayBy:GetText()
@@ -217,26 +233,47 @@ local function PayBack()
 	frame.payAmount:ClearFocus()
 end
 
-local function Build()
-	frame = ns.Dialog("SwedbankMemberFrame", W, H, "Swedbank")
-	ns.Text(frame, "GameFontNormal", "TOPLEFT", 24, -34):SetText("Låneansökan")
-	frame.applicant = ns.Text(frame, "GameFontHighlight", "TOPLEFT", 24, -56)
-	ns.Text(frame, "GameFontNormalSmall", "TOPLEFT", 24, -84):SetText("Belopp (t.ex. 50g)")
-	frame.amount = ns.Input(frame, 90)
-	frame.amount:SetPoint("TOPLEFT", 150, -80)
-	ns.Text(frame, "GameFontNormalSmall", "TOPLEFT", 270, -84):SetText("Betala senast (dd/mm, valfritt)")
-	frame.repayBy = ns.Input(frame, 60)
-	frame.repayBy:SetPoint("TOPLEFT", 450, -80)
-	ns.Text(frame, "GameFontNormalSmall", "TOPLEFT", 24, -112):SetText("Anledning")
-	frame.reason = ns.Input(frame, 420, Submit)
-	frame.reason:SetPoint("TOPLEFT", 150, -108)
-	frame.reason:SetMaxBytes(ns.REASON_BYTES + 1)
-	local submit = ns.Button(frame, "Skicka", 100, Submit)
-	submit:SetPoint("TOPLEFT", 146, -136)
-	ns.Text(frame, "GameFontDisableSmall", "LEFT", submit, "RIGHT", 12, 0):SetText("Bara guildledaren ser din ansökan och dina lån.")
+local function Layout()
+	frame.apply:SetShown(tab == 1)
+	frame.loans:SetShown(tab == 2)
+	frame.sideTabs.Select(tab)
+end
 
-	ns.Text(frame, "GameFontNormal", "TOPLEFT", 24, -176):SetText("Mina lån")
-	list = ns.List(frame, -196, ROWS, #COLS, W)
+function ns.BuildMember(page, panel)
+	frame = CreateFrame("Frame", nil, page)
+	frame:SetAllPoints()
+
+	-- Page 1: Ansök.
+	local apply = CreateFrame("Frame", nil, frame)
+	apply:SetAllPoints()
+	frame.apply = apply
+	ns.Text(apply, "GameFontNormal", "TOPLEFT", 24, -70):SetText("Låneansökan")
+	frame.applicant = ns.Text(apply, "GameFontHighlight", "TOPLEFT", 24, -92)
+	ns.Text(apply, "GameFontNormalSmall", "TOPLEFT", 24, -122):SetText("Belopp (t.ex. 50g)")
+	frame.amount = ns.Input(apply, 90)
+	frame.amount:SetPoint("TOPLEFT", 150, -118)
+	ns.Text(apply, "GameFontNormalSmall", "TOPLEFT", 24, -150):SetText("Betala senast")
+	frame.repayBy = ns.Input(apply, 60)
+	frame.repayBy:SetPoint("TOPLEFT", 150, -146)
+	ns.Text(apply, "GameFontDisableSmall", "LEFT", frame.repayBy, "RIGHT", 10, 0):SetText("dd/mm, valfritt")
+	ns.Text(apply, "GameFontNormalSmall", "TOPLEFT", 24, -178):SetText("Anledning")
+	frame.reason = ns.Input(apply, W - 180, Submit)
+	frame.reason:SetPoint("TOPLEFT", 150, -174)
+	frame.reason:SetMaxBytes(ns.REASON_BYTES + 1)
+	frame.submit = ns.Button(apply, "Skicka", 100, Submit)
+	frame.submit:SetPoint("TOPLEFT", 146, -202)
+	frame.submitHint = ns.Text(apply, "GameFontDisableSmall", "LEFT", frame.submit, "RIGHT", 12, 0)
+	frame.submitHint:SetWidth(W - 290)
+	local terms = ns.Text(apply, "GameFontHighlightSmall", "TOPLEFT", 24, -246)
+	terms:SetWidth(W - 48)
+	terms:SetText("Bara guildledaren ser din ansökan och dina lån. Du behöver God ställning hos Skatteverket för att ansöka. Räntan är enkel och räknas per vecka på det som är kvar av lånet, från dagen guldet skickas. Betalningar går först till räntan, sedan till lånet. Betala tillbaka under Mina lån när du står vid guildbanken.")
+
+	-- Page 2: Mina lån.
+	local loans = CreateFrame("Frame", nil, frame)
+	loans:SetAllPoints()
+	frame.loans = loans
+	ns.Text(loans, "GameFontNormal", "TOPLEFT", 24, -70):SetText("Mina lån")
+	list = ns.List(loans, -90, ROWS, #COLS, W)
 	list:SetColumns(COLS)
 	for _, row in ipairs(list.rows) do
 		row:SetScript("OnClick", function()
@@ -246,22 +283,31 @@ local function Build()
 			ns.RefreshMember()
 		end)
 	end
-	frame.empty = ns.Text(frame, "GameFontDisableSmall", "TOPLEFT", 24, -214)
+	frame.empty = ns.Text(loans, "GameFontDisableSmall", "TOPLEFT", 24, -108)
 
 	-- Pay back: amount (filled with all that is due when a loan is clicked) and the button.
-	ns.Text(frame, "GameFontNormalSmall", "BOTTOMLEFT", 24, 58):SetText("Betala tillbaka")
-	frame.payAmount = ns.Input(frame, 100, PayBack)
-	frame.payAmount:SetPoint("BOTTOMLEFT", 130, 52)
-	frame.pay = ns.Button(frame, "Betala till guildbanken", 170, PayBack)
+	frame.payHint = ns.Text(loans, "GameFontDisableSmall", "BOTTOMLEFT", 24, 62)
+	ns.Text(loans, "GameFontNormalSmall", "BOTTOMLEFT", 24, 40):SetText("Betala tillbaka")
+	frame.payAmount = ns.Input(loans, 100, PayBack)
+	frame.payAmount:SetPoint("BOTTOMLEFT", 130, 34)
+	frame.pay = ns.Button(loans, "Betala till guildbanken", 170, PayBack)
 	frame.pay:SetPoint("LEFT", frame.payAmount, "RIGHT", 10, 0)
-	frame.payHint = ns.Text(frame, "GameFontDisableSmall", "LEFT", frame.pay, "RIGHT", 10, 0)
-
-	local close = ns.Button(frame, "Stäng", 100, function() frame:Hide() end)
-	close:SetPoint("BOTTOMRIGHT", -24, 18)
-	frame:EnableMouseWheel(true)
-	frame:SetScript("OnMouseWheel", function(_, delta)
+	loans:EnableMouseWheel(true)
+	loans:SetScript("OnMouseWheel", function(_, delta)
 		offset = offset - delta
 		ns.RefreshMember()
+	end)
+
+	frame.sideTabs = ns.SideTabs(frame, panel, { { "INV_Scroll_03", "Ansök om lån" }, { "INV_Misc_Coin_02", "Mina lån" } }, function(i)
+		tab = i
+		Layout()
+		ns.RefreshMember()
+	end)
+	frame:SetScript("OnShow", function()
+		-- Mina lån when there are loans, the form when there are none.
+		tab = next(ns.char.loans) and 2 or 1
+		Layout()
+		Sync()
 	end)
 	frame:SetScript("OnUpdate", function(self, elapsed)
 		self.elapsed = (self.elapsed or 0) + elapsed
@@ -270,11 +316,36 @@ local function Build()
 			ns.RefreshMember()
 		end
 	end)
+	frame:Hide()
+end
+
+-- A loan approved and not yet repaid.
+function ns.HasLoan()
+	for _, loan in pairs(ns.char.loans) do
+		if loan.status == "approved" then return true end
+	end
+	return false
+end
+
+function ns.ShowMember(shown)
+	if frame then frame:SetShown(shown) end
 end
 
 function ns.RefreshMember()
 	if not frame or not frame:IsShown() then return end
 	frame.applicant:SetText("Sökande: " .. (ns.Me() or UnitName("player")))
+	local may, standing = MayApply()
+	if may then
+		frame.submit:Enable()
+		frame.submitHint:SetText("")
+	else
+		frame.submit:Disable()
+		if standing == "locked" then
+			frame.submitHint:SetText("|cffff4040Kräver att du är godkänd medborgare.|r")
+		else
+			frame.submitHint:SetText("|cffff4040Kräver God ställning hos Skatteverket" .. (standing and (" (du har " .. (standing == "neutral" and "Neutral" or "Negativ") .. ")") or "") .. ".|r")
+		end
+	end
 	local sorted = {}
 	for _, loan in pairs(ns.char.loans) do table.insert(sorted, loan) end
 	-- Open loans first (running, then waiting), newest first within each; the
@@ -312,12 +383,4 @@ function ns.RefreshMember()
 		frame.pay:Disable()
 		frame.payHint:SetText(not Active(loan) and "Klicka på ett aktivt lån." or pendingPay and "Betalningen pågår." or "Öppna guildbanken.")
 	end
-end
-
-function ns.ToggleMember()
-	if not frame then Build() end
-	if frame:IsShown() then frame:Hide() return end
-	frame:Show()
-	Sync()
-	ns.RefreshMember()
 end

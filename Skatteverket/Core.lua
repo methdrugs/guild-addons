@@ -7,11 +7,14 @@
 -- guild leader's side is in Leader.lua and the /skatt window in Window.lua.
 --
 -- Guild channel, no amounts:
---   T;version;last deposit;debt since;good since;has paid   a member's standing
+--   T;version;last deposit;debt since;good since;has paid;Swedbank version
+--                                                           a member's standing; "-" when
+--                                                           Swedbank is not running (0.22)
 --   B                                                       ask the leader for the standings
 --   Q                                                       leader: everyone send your figures
 --   R;rate in basis points;stamp                            leader: the tax rate
---   E;name,last deposit,debt since,last seen,good since,has paid;...   leader: standings
+--   E;name,last deposit,debt since,last seen,good since,has paid,version,Swedbank version;...
+--                                                           leader: standings
 --   V;copper;server time[;reader]   the guild bank's balance, sent by whoever opened
 --                                   the bank; the leader adds who read it when relaying
 -- Whispers between a member and the leader, with amounts:
@@ -29,8 +32,8 @@
 local _, ns = ...
 
 ns.GUILD = "THÖNDERSTÖRM"
-ns.VERSION = "0.21"
-ns.SCHEMA = 7
+ns.VERSION = "0.22"
+ns.SCHEMA = 8
 ns.PREFIX = "SKATT"
 ns.GOOD_HOURS = 48
 ns.NEGATIVE_DAYS = 7
@@ -244,6 +247,7 @@ end
 
 function ns.Changed()
 	if ns.RefreshWindow then ns.RefreshWindow() end
+	if ns.RefreshMinimap then ns.RefreshMinimap() end
 end
 
 -- Keep this character's own row in the list current.
@@ -260,7 +264,17 @@ function ns.UpdateSelf()
 	m.version, m.incomeTotal, m.paid, m.owed = ns.VERSION, char.incomeTotal, char.paid, char.owed
 	m.lastDeposit, m.incomeSince, m.debtSince, m.lastSeen = char.lastDeposit or 0, char.incomeSince, char.debtSince, time()
 	m.goodSince, m.hasPaid = char.goodSince, char.paid > 0
+	m.swed = ns.SwedbankVersion()
 	ns.Changed()
+end
+
+-- The Swedbank version running on this client, or "-" (0.22). Swedbank sends
+-- nothing in the guild channel, so its version travels with ours.
+function ns.SwedbankVersion()
+	local loaded = (C_AddOns and C_AddOns.IsAddOnLoaded) or IsAddOnLoaded
+	local meta = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
+	if loaded and meta and loaded("Swedbank") then return meta("Swedbank", "Version") or "-" end
+	return "-"
 end
 
 -- The amounts, to the leader only. If the leader is offline they wait,
@@ -278,8 +292,8 @@ end
 local function SendStatus()
 	if not char or not ns.InOurGuild() then return end
 	dirty = false
-	ns.Send(string.format("T;%s;%d;%d;%d;%d", ns.VERSION, char.lastDeposit or 0, char.debtSince or 0,
-		char.goodSince or 0, char.paid > 0 and 1 or 0))
+	ns.Send(string.format("T;%s;%d;%d;%d;%d;%s", ns.VERSION, char.lastDeposit or 0, char.debtSince or 0,
+		char.goodSince or 0, char.paid > 0 and 1 or 0, ns.SwedbankVersion()))
 	SendPrivate()
 end
 ns.SendStatus = SendStatus
@@ -331,8 +345,18 @@ local function Reconcile()
 	char.debtSince = char.debts[1] and char.debts[1].t or now
 end
 
-local function AddIncome(copper)
+-- Where income came from, per day: l loot, v vendor, a auction house.
+-- Kept on this character only and never sent (Zach 8/11).
+local function Note(source, copper)
+	local day = date("%Y-%m-%d")
+	local d = char.ledger[day] or { l = 0, v = 0, a = 0 }
+	char.ledger[day] = d
+	d[source] = math.max(0, d[source] + copper)
+end
+
+local function AddIncome(copper, source)
 	if copper <= 0 or not ns.InOurGuild() then return end
+	Note(source, copper)
 	char.incomeTotal = char.incomeTotal + copper
 	char.incomeSince = char.incomeSince + copper
 	char.owed = char.owed + copper * db.rate
@@ -355,6 +379,7 @@ end
 local function RemoveIncome(copper)
 	if not copper or copper <= 0 or not ns.InOurGuild() then return end
 	local back = math.min(copper, char.incomeTotal)
+	Note("v", -back)
 	char.incomeTotal = char.incomeTotal - back
 	char.incomeSince = math.max(0, char.incomeSince - back)
 	char.owed = char.owed - back * db.rate
@@ -431,7 +456,8 @@ local function OnMoney()
 	lastMoney = now
 	if delta <= 0 or Excluded() then return end
 	if InContext() then
-		AddIncome(delta)
+		local loot = looting or GetTime() < lootGraceUntil or GetTime() < moneyMsgUntil
+		AddIncome(delta, (merchantOpen and not loot) and "v" or "l")
 	else
 		-- Maybe looted money whose chat line has not arrived yet.
 		unclaimed = { amount = delta, t = GetTime() }
@@ -442,7 +468,7 @@ end
 local function OnLootMessage()
 	if Excluded() then return end
 	if unclaimed and GetTime() - unclaimed.t < 1 then
-		AddIncome(unclaimed.amount)
+		AddIncome(unclaimed.amount, "l")
 		unclaimed = nil
 	else
 		moneyMsgUntil = GetTime() + 1
@@ -460,7 +486,7 @@ local function OnTakeMail(index)
 	local invoiceType = GetInboxInvoiceInfo and GetInboxInvoiceInfo(index)
 	if invoiceType ~= "seller" then return end
 	takenMail[index] = true
-	AddIncome(money)
+	AddIncome(money, "a")
 end
 hooksecurefunc("TakeInboxMoney", OnTakeMail)
 if AutoLootMailItem then hooksecurefunc("AutoLootMailItem", OnTakeMail) end
@@ -574,6 +600,8 @@ local function VersionNumber(v)
 	return major and (tonumber(major) * 1000 + tonumber(minor)) or 0
 end
 
+ns.VersionNumber = VersionNumber
+
 local function CheckVersion(v)
 	if not warnedVersion and VersionNumber(v) > VersionNumber(ns.VERSION) then
 		warnedVersion = true
@@ -592,6 +620,8 @@ local function OnPublic(sender, parts)
 	m.debtSince = debt > 0 and debt or nil
 	m.goodSince = good > 0 and good or nil
 	m.hasPaid = parts[6] == "1"
+	-- 0.21 and older send no Swedbank version; unknown until they update.
+	m.swed = parts[7]
 	m.lastSeen = time()
 	ns.Changed()
 end
@@ -600,7 +630,7 @@ end
 local function OnBoard(parts)
 	local me = ns.Me()
 	for i = 2, #parts do
-		local name, lastDeposit, debtSince, lastSeen, goodSince, hasPaid = strsplit(",", parts[i])
+		local name, lastDeposit, debtSince, lastSeen, goodSince, hasPaid, version, swed = strsplit(",", parts[i])
 		lastSeen = tonumber(lastSeen)
 		if name and lastSeen and name ~= me then
 			local m = db.members[name]
@@ -612,6 +642,8 @@ local function OnBoard(parts)
 				m.debtSince = debtSince > 0 and debtSince or nil
 				m.goodSince = goodSince > 0 and goodSince or nil
 				m.hasPaid = hasPaid == "1"
+				if version and version ~= "" then m.version = version end
+				if swed and swed ~= "" then m.swed = swed end
 			end
 		end
 	end
@@ -751,6 +783,11 @@ local function Migrate()
 		-- stays as it is; everyone, old members too, signs the scroll once.
 		db.nextNumber = db.nextNumber or 1
 	end
+	if (char.schema or 1) < 8 then
+		-- 0.22 notes income per day and source from now on; what came in
+		-- before has no source and stays apart (Zach 8/11).
+		char.ledgerBefore = char.incomeTotal
+	end
 	-- 0.15 keeps the guild bank's last known balance in db.bank, empty until
 	-- someone reads it, and every member's recipes in db.recipes and this
 	-- character's own in char.recipes (both made in Init).
@@ -775,6 +812,7 @@ local function Init()
 	char.applied = char.applied or {}
 	char.debts = char.debts or {}
 	char.recipes = char.recipes or {}
+	char.ledger = char.ledger or {}
 	ns.db, ns.char = db, char
 	Migrate()
 end
@@ -802,6 +840,7 @@ events:SetScript("OnEvent", function(_, event, ...)
 		local register = C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix or RegisterAddonMessagePrefix
 		if register then register(ns.PREFIX) end
 		ns.RequestRoster()
+		ns.BuildMinimap()
 		C_Timer.After(15, function()
 			ns.UpdateSelf()
 			SendStatus()
@@ -809,6 +848,7 @@ events:SetScript("OnEvent", function(_, event, ...)
 			if IsGuildLeader() and ns.BroadcastRate then ns.BroadcastRate() end
 		end)
 		C_Timer.After(20, Remind)
+		C_Timer.After(25, ns.NewsAtLogin)
 		-- The roster says when the leader comes online; ask for it now and then.
 		C_Timer.NewTicker(60, ns.RequestRoster)
 		C_Timer.NewTicker(300, function()
@@ -856,13 +896,17 @@ SlashCmdList.SKATTEVERKET = function(msg)
 	-- Swedish words, with the English ones of earlier versions still working.
 	cmd = ({ betala = "pay", sats = "rate", ["efterskänk"] = "forgive", kredit = "credit", synka = "sync", lista = "list",
 		["anmälan"] = "register", anmalan = "register", yrken = "professions",
-		["hjälp"] = "help", hjalp = "help" })[cmd] or cmd
+		["hjälp"] = "help", hjalp = "help", nytt = "news" })[cmd] or cmd
 	if cmd == "" or cmd == "list" then
 		ns.ToggleWindow()
 	elseif cmd == "register" then
 		ns.ShowScroll()
 	elseif cmd == "help" then
 		ns.ShowHelp()
+	elseif cmd == "news" then
+		ns.ToggleWindow(4)
+	elseif cmd == "tystsignera" then
+		ns.SignQuietly()
 	elseif cmd == "yrkestest" then
 		ns.ProfessionTest()
 	elseif cmd == "recepttest" then
@@ -884,7 +928,7 @@ SlashCmdList.SKATTEVERKET = function(msg)
 		if not IsGuildLeader() then Print("bara guildledaren kan göra det.") return end
 		ns.LeaderCommand(cmd, rest)
 	else
-		Print("/skatt öppnar fönstret, /skatt info visar din skatt, /skatt betala betalar vid guildbanken, /skatt anmälan visar din anmälan, /skatt yrken visar yrkesregistret, /skatt hjälp visar villkor och vanliga frågor.")
+		Print("/skatt öppnar fönstret, /skatt info visar din skatt, /skatt betala betalar vid guildbanken, /skatt anmälan visar din anmälan, /skatt yrken visar yrkesregistret, /skatt hjälp visar villkor och vanliga frågor, /skatt nytt visar vad som är nytt.")
 		Print("Guildledaren: /skatt sats 5, /skatt efterskänk Namn, /skatt kredit Namn 2g50s, /skatt synka.")
 	end
 end

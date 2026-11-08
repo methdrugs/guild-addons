@@ -1,13 +1,15 @@
--- Swedbank, the guild leader's side: three tabs. Applications to approve
+-- Swedbank, the guild leader's side, on the Swedbank tab of the
+-- THÖNDERSTÖRM panel with three bookmark tabs on its right edge (Zach
+-- 8/11). Applications to approve
 -- (with a weekly rate) or decline; Loans running, with Fill mail, Mark
 -- sent, Add payment and Mark repaid; History of repaid and declined loans
 -- with every date. This copy in SwedbankDB is the record.
 
 local _, ns = ...
 
-local ROWS, W, H = 12, 900, 480
+local ROWS, W = 12, 900
 local TABS = { "Applications", "Loans", "History" }
-local TAB_LABELS = { Applications = "Ansökningar", Loans = "Lån", History = "Historik" }
+local SIDE_TABS = { { "INV_Scroll_03", "Ansökningar" }, { "INV_Misc_Coin_02", "Lån" }, { "INV_Misc_Book_09", "Historik" } }
 local COLS = {
 	Applications = { { "Ansökt", 70 }, { "Låntagare", 120 }, { "Belopp", 100 }, { "Betala senast", 85 }, { "Anledning", 460 } },
 	Loans = { { "Låntagare", 120 }, { "Belopp", 95 }, { "Ränta/v", 55 }, { "Skickat", 75 }, { "Dagar", 45 }, { "Räntor", 95 }, { "Återbetalt", 95 }, { "Att betala", 100 }, { "Betala senast", 85 } },
@@ -343,8 +345,17 @@ local function Warning(loan)
 			if Overdue(other) then overdue = overdue + 1 end
 		end
 	end
-	if running == 0 then return "" end
-	return string.format("|cffff4040Har redan %d lån igång%s.|r ", running, overdue > 0 and string.format(", %d försenade", overdue) or "")
+	local text = ""
+	if running > 0 then
+		text = string.format("|cffff4040Har redan %d lån igång%s.|r ", running, overdue > 0 and string.format(", %d försenade", overdue) or "")
+	end
+	-- Members apply only in good standing (Zach 8/11), but a macro can send
+	-- an application anyway; say so here.
+	local standing = SkatteverketAPI and SkatteverketAPI.MemberStanding(loan.borrower)
+	if standing and standing ~= "good" then
+		text = text .. string.format("|cffff4040Ställning hos Skatteverket: %s.|r ", standing == "neutral" and "Neutral" or "Negativ")
+	end
+	return text
 end
 
 local function Values(loan)
@@ -391,33 +402,31 @@ local function Detail(loan)
 	return Warning(loan) .. dates, "Anledning: " .. loan.reason, "Betalningar: " .. (#payments > 0 and table.concat(payments, ", ") or "inga"), bank
 end
 
-local function Build()
-	frame = ns.Dialog("SwedbankBankerFrame", W, H, "Swedbank")
-	frame.tabs = {}
-	local prev
-	for _, name in ipairs(TABS) do
-		local b = ns.Button(frame, TAB_LABELS[name], 120, function() tab = name ns.RefreshBanker() end)
-		if prev then b:SetPoint("LEFT", prev, "RIGHT", 6, 0) else b:SetPoint("TOPLEFT", 24, -32) end
-		frame.tabs[name] = b
-		prev = b
-	end
-	frame.summary = ns.Text(frame, "GameFontHighlightSmall", "LEFT", prev, "RIGHT", 20, 0)
+function ns.BuildBanker(page, panel)
+	frame = CreateFrame("Frame", nil, page)
+	frame:SetAllPoints()
+	frame.title = ns.Text(frame, "GameFontNormal", "TOPLEFT", 24, -70)
+	frame.summary = ns.Text(frame, "GameFontHighlightSmall", "LEFT", frame.title, "RIGHT", 16, 0)
 
-	list = ns.List(frame, -66, ROWS, 9, W)
+	-- Applications, Loans and History share the list.
+	local main = CreateFrame("Frame", nil, frame)
+	main:SetAllPoints()
+	frame.main = main
+	list = ns.List(main, -92, ROWS, 9, W)
 	for _, row in ipairs(list.rows) do
 		row:SetScript("OnClick", function() selected[tab] = row.id ns.RefreshBanker() end)
 	end
-	local y = -66 - 14 - ROWS * 18 - 10
+	local y = -92 - 14 - ROWS * 18 - 10
 	frame.details = {}
 	for i = 1, 4 do
-		frame.details[i] = ns.Text(frame, "GameFontHighlightSmall", "TOPLEFT", 24, y - (i - 1) * 16)
+		frame.details[i] = ns.Text(main, "GameFontHighlightSmall", "TOPLEFT", 24, y - (i - 1) * 16)
 		frame.details[i]:SetWidth(W - 48)
 		frame.details[i]:SetWordWrap(false)
 	end
 
 	-- Applications: rate, Approve, Decline.
-	local apps = CreateFrame("Frame", nil, frame)
-	apps:SetPoint("BOTTOMLEFT", 24, 46)
+	local apps = CreateFrame("Frame", nil, main)
+	apps:SetPoint("BOTTOMLEFT", 24, 34)
 	apps:SetSize(W - 48, 24)
 	ns.Text(apps, "GameFontNormalSmall", "LEFT", 0, 0):SetText("Ränta % i veckan")
 	apps.rate = ns.Input(apps, 40)
@@ -445,8 +454,8 @@ local function Build()
 	decline:SetPoint("LEFT", approve, "RIGHT", 8, 0)
 
 	-- Loans: Fill mail, Mark sent, a payment, Mark repaid.
-	local loans = CreateFrame("Frame", nil, frame)
-	loans:SetPoint("BOTTOMLEFT", 24, 46)
+	local loans = CreateFrame("Frame", nil, main)
+	loans:SetPoint("BOTTOMLEFT", 24, 34)
 	loans:SetSize(W - 48, 24)
 	local fill = ns.Button(loans, "Fyll i brev", 110, function()
 		local loan = Selected()
@@ -495,11 +504,14 @@ local function Build()
 	ns.Text(review, "GameFontDisableSmall", "LEFT", reject, "RIGHT", 12, 0):SetText("för betalningar som bankloggen inte har bekräftat")
 	frame.controls = { Applications = apps, Loans = loans }
 
-	local close = ns.Button(frame, "Stäng", 100, function() frame:Hide() end)
-	close:SetPoint("BOTTOMRIGHT", -24, 18)
+	frame.sideTabs = ns.SideTabs(frame, panel, SIDE_TABS, function(i)
+		tab = TABS[i]
+		ns.RefreshBanker()
+	end)
+	frame:SetScript("OnShow", ns.RequestRoster)
 
-	frame:EnableMouseWheel(true)
-	frame:SetScript("OnMouseWheel", function(_, delta)
+	main:EnableMouseWheel(true)
+	main:SetScript("OnMouseWheel", function(_, delta)
 		offset[tab] = (offset[tab] or 0) - delta
 		ns.RefreshBanker()
 	end)
@@ -510,12 +522,20 @@ local function Build()
 			ns.RefreshBanker()
 		end
 	end)
+	frame:Hide()
+end
+
+function ns.ShowBanker(shown)
+	if frame then frame:SetShown(shown) end
 end
 
 function ns.RefreshBanker()
 	if not frame or not frame:IsShown() then return end
-	for name, b in pairs(frame.tabs) do
-		if name == tab then b:Disable() else b:Enable() end
+	for i, name in ipairs(TABS) do
+		if name == tab then
+			frame.sideTabs.Select(i)
+			frame.title:SetText(SIDE_TABS[i][2])
+		end
 	end
 	for name, controls in pairs(frame.controls) do
 		if name == tab then controls:Show() else controls:Hide() end
@@ -561,12 +581,4 @@ function ns.RefreshBanker()
 		frame.details[3]:SetText("")
 		frame.details[4]:SetText("")
 	end
-end
-
-function ns.ToggleBanker()
-	if not frame then Build() end
-	if frame:IsShown() then frame:Hide() return end
-	frame:Show()
-	ns.RequestRoster()
-	ns.RefreshBanker()
 end

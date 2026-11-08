@@ -1,9 +1,11 @@
 ## Interface: 16001
-## Title: Swedbank
+## Title: THÖNDERSTÖRM – Swedbank
+## Dependencies: Skatteverket
 ## Notes: Guild loans for THÖNDERSTÖRM: apply in /swedbank; only the guild leader sees applications and loans.
-## Version: 0.9
+## Version: 0.10
 ## SavedVariables: SwedbankDB
 ## SavedVariablesPerCharacter: SwedbankCharDB
 Core.lua
 Member.lua
 Banker.lua
+News.lua
