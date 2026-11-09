@@ -1,0 +1,3 @@
+The Seger sounds (Seger*.ogg) are built from samples of VSCO 2 Community
+Edition by Versilian Studios (https://github.com/sgossner/VSCO-2-CE),
+released under CC0 1.0 (public domain). Thank you, Versilian Studios.

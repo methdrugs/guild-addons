@@ -203,7 +203,11 @@ local function SendOwn(code)
 	for i, part in ipairs(parts) do
 		Queue(string.format("W;%s;%d;%d;%d;%s", code, i, #parts, mine.at, part))
 	end
-	mine.sentAt = ns.Now()
+	-- Only the leader relays lists, and nobody relays to the leader: with the
+	-- leader offline the list counts as unsent and goes again at the next
+	-- login (Zach 8/11, a new member's recipes never reached him).
+	local _, leaderOnline = ns.Leader()
+	if leaderOnline or IsGuildLeader() then mine.sentAt = ns.Now() end
 end
 
 -- After the window has been open a moment, so the list has loaded.
@@ -366,6 +370,8 @@ local function Name(key)
 	local d = Data(key)
 	return d and d.name
 end
+-- For arbetsordrar (Orders.lua).
+ns.RecipeName = function(key) return Name(key) or "..." end
 
 -- { recipe, name, code } for every recipe whose name contains text, in
 -- members who are in the guild now; recipe name first, then member.

@@ -1,6 +1,9 @@
 -- Skatteverket, the Inställningar tab (Zach 8/11): show the minimap button
 -- or use the commands only, and whether Nytt opens by itself after an
--- update. Saved for the whole account; open to everyone, signed or not.
+-- update, and whether achievements come with a banner and a sound. Saved
+-- for the whole account; open to everyone, signed or not.
+-- The Guildmap section is gone (Zach 9/11): GuildMap spammed errors in PvP
+-- until his interface locked, so members are no longer pointed to it.
 
 local _, ns = ...
 
@@ -38,11 +41,19 @@ function ns.BuildOptions(parent)
 			function() return ns.db.showNews ~= false end,
 			function(on) ns.db.showNews = on end),
 	}
+	-- For those who find the banner annoying (Zach 8/11): a chat line
+	-- instead. Not while Prestationer is on hold (Zach 9/11).
+	if ns.PRESTATIONER then
+		table.insert(page.boxes, Check(parent, "Visa banner och ljud för prestationer", -150,
+			function() return ns.db.showBanners ~= false end,
+			function(on) ns.db.showBanners = on end))
+	end
 	local hint = parent:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-	hint:SetPoint("TOPLEFT", 28, -160)
+	hint:SetPoint("TOPLEFT", 28, -188)
 	hint:SetWidth(440)
 	hint:SetJustifyH("LEFT")
-	hint:SetText("Utan knappen: /skatt öppnar panelen, /skatt nytt visar vad som är nytt, /swedbank öppnar Swedbank. Inställningarna gäller alla dina karaktärer.")
+	hint:SetText("Utan minimapknappen: /skatt öppnar Skatt, /yrken Yrken, /swedbank Swedbank och /bok Bokföring; /skatt nytt visar vad som är nytt"
+		.. (ns.PRESTATIONER and ", /skatt prestationer prestationer" or "") .. ". Inställningarna gäller alla dina karaktärer.")
 end
 
 function ns.RefreshOptions()

@@ -95,7 +95,8 @@ local function Build()
 	if frame.Inset then frame.Inset:Hide() end
 	frame:SetSize(W, H)
 	frame:SetPoint("CENTER", 200, 0)
-	frame:SetFrameStrata("DIALOG")
+	frame:SetFrameStrata("HIGH")
+	frame:SetToplevel(true)
 	frame:SetToplevel(true)
 	frame:SetClampedToScreen(true)
 	frame:SetMovable(true)
@@ -246,8 +247,16 @@ local function Build()
 		if ChatFrame_SendTell then ChatFrame_SendTell(who)
 		elseif ChatFrameUtil and ChatFrameUtil.SendTell then ChatFrameUtil.SendTell(who) end
 	end)
+	-- Arbetsorder (Zach 9/11): order the selected recipe from this member.
+	frame.order = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+	frame.order:SetSize(90, 22)
+	frame.order:SetText("Beställ")
+	frame.order:SetPoint("RIGHT", frame.whisper, "LEFT", -4, 0)
+	frame.order:SetScript("OnClick", function()
+		if who and selected and selected.key then ns.OrderDialog(who, selected.key) end
+	end)
 	frame.note = Text(frame, "GameFontDisableSmall", "BOTTOMLEFT", 14, 12)
-	frame.note:SetWidth(W - 230)
+	frame.note:SetWidth(W - 320)
 
 	frame:SetScript("OnUpdate", function(self, elapsed)
 		-- Item names and icons load in the background; show them as they come.
@@ -364,6 +373,9 @@ function ns.RefreshRecipeWindow(quiet)
 			b:Hide()
 		end
 	end
+	-- Citizens only, both ends (Zach 9/11).
+	frame.order:SetShown(not ns.Locked())
+	if selected and selected.key and who ~= ns.Me() and ns.IsCitizen(who) then frame.order:Enable() else frame.order:Disable() end
 	if not quiet then
 		local online = ns.Online(who)
 		if online then frame.whisper:Enable() else frame.whisper:Disable() end

@@ -23,7 +23,8 @@
 --   K;id               member -> leader: adjustment applied
 --   M;paid;last deposit   leader -> member: restore a lost record
 -- Registration (Y, Z, G, N) is described in Professions.lua, recipe search
--- (W, J, U) in Recipes.lua.
+-- (W, J, U) in Recipes.lua, achievements (H, I) in Achievements.lua,
+-- arbetsordrar (O, D, X) in Orders.lua.
 --
 -- Saved data survives new versions as long as the folder and the names
 -- SkatteverketDB and SkatteverketCharDB never change. When the shape of
@@ -32,8 +33,8 @@
 local _, ns = ...
 
 ns.GUILD = "THÖNDERSTÖRM"
-ns.VERSION = "0.22"
-ns.SCHEMA = 8
+ns.VERSION = "0.25"
+ns.SCHEMA = 9
 ns.PREFIX = "SKATT"
 ns.GOOD_HOURS = 48
 ns.NEGATIVE_DAYS = 7
@@ -245,6 +246,17 @@ function ns.Locked()
 	return nil
 end
 
+-- Whether a member has the citizen rank or higher, by the roster; the
+-- leader always (Zach 9/11: arbetsordrar are for good, honest members).
+function ns.IsCitizen(name)
+	local citizen = ns.CitizenRankIndex()
+	for i = 1, GetNumGuildMembers() do
+		local full, _, rankIndex = GetGuildRosterInfo(i)
+		if full and ns.Short(full) == name then return rankIndex == 0 or (citizen ~= nil and rankIndex <= citizen) end
+	end
+	return false
+end
+
 function ns.Changed()
 	if ns.RefreshWindow then ns.RefreshWindow() end
 	if ns.RefreshMinimap then ns.RefreshMinimap() end
@@ -380,6 +392,9 @@ local function RemoveIncome(copper)
 	if not copper or copper <= 0 or not ns.InOurGuild() then return end
 	local back = math.min(copper, char.incomeTotal)
 	Note("v", -back)
+	-- The Ånger achievement (Zach 8/11).
+	char.achBuyback = true
+	C_Timer.After(1, ns.CheckAchievements)
 	char.incomeTotal = char.incomeTotal - back
 	char.incomeSince = math.max(0, char.incomeSince - back)
 	char.owed = char.owed - back * db.rate
@@ -446,6 +461,7 @@ local function ConfirmDeposit()
 	if char.owed >= 1 then Print("kvar att betala: " .. ns.Money(char.owed)) end
 	ns.UpdateSelf()
 	SendStatus()
+	ns.CheckAchievements()
 end
 
 local function OnMoney()
@@ -690,6 +706,10 @@ OnWhisper = function(sender, msg)
 		elseif kind == "G" then ns.OnRegister(sender)
 		end
 	end
+	-- Arbetsordrar, between any two members (Orders.lua).
+	if kind == "O" then ns.OnOrder(sender, parts)
+	elseif kind == "D" then ns.OnOrderState(sender, parts)
+	end
 	if sender == ns.Leader() then
 		if kind == "A" then ns.ApplyAdjustment(parts[2], parts[3], tonumber(parts[4]))
 		elseif kind == "M" then Restore(tonumber(parts[2]), tonumber(parts[3]))
@@ -728,8 +748,14 @@ local function OnAddonMessage(prefix, msg, channel, sender)
 		ns.OnRecipeRequest(sender, parts[2])
 	elseif kind == "U" and fromLeader then
 		ns.OnRelayedRecipes(parts)
+	elseif kind == "X" then
+		ns.OnOrderRequest(sender)
 	elseif kind == "Y" then
 		ns.OnProfile(sender, parts)
+	elseif kind == "H" then
+		ns.OnAchievements(sender, parts)
+	elseif kind == "I" and fromLeader then
+		ns.OnAchievementBoard(parts)
 	elseif kind == "Z" and fromLeader then
 		ns.OnProfileBoard(parts)
 	elseif kind == "R" and fromLeader then
@@ -788,6 +814,9 @@ local function Migrate()
 		-- before has no source and stays apart (Zach 8/11).
 		char.ledgerBefore = char.incomeTotal
 	end
+	-- 0.23 keeps this character's achievements in char.ach (id -> time
+	-- earned, made in Init) and others' in db.members[name].ach; nothing
+	-- older changes. Those already earned are found at the next login.
 	-- 0.15 keeps the guild bank's last known balance in db.bank, empty until
 	-- someone reads it, and every member's recipes in db.recipes and this
 	-- character's own in char.recipes (both made in Init).
@@ -813,6 +842,7 @@ local function Init()
 	char.debts = char.debts or {}
 	char.recipes = char.recipes or {}
 	char.ledger = char.ledger or {}
+	char.ach = char.ach or {}
 	ns.db, ns.char = db, char
 	Migrate()
 end
@@ -848,11 +878,16 @@ events:SetScript("OnEvent", function(_, event, ...)
 			if IsGuildLeader() and ns.BroadcastRate then ns.BroadcastRate() end
 		end)
 		C_Timer.After(20, Remind)
+		C_Timer.After(30, function()
+			ns.CheckAchievements()
+			ns.SendAchievements()
+		end)
 		C_Timer.After(25, ns.NewsAtLogin)
 		-- The roster says when the leader comes online; ask for it now and then.
 		C_Timer.NewTicker(60, ns.RequestRoster)
 		C_Timer.NewTicker(300, function()
 			if dirty then SendStatus() end
+			ns.CheckAchievements()
 			-- Remind again whenever the standing drops a step.
 			local standing = ns.InOurGuild() and ns.Standing(char)
 			if standing and standing ~= lastStanding and standing ~= "good" then Remind() end
@@ -862,6 +897,8 @@ events:SetScript("OnEvent", function(_, event, ...)
 		if privateDirty and ns.InOurGuild() then SendPrivate() end
 		-- The full name of this character is known only once the roster is in.
 		if ns.Me() and not (db.members[ns.Me()]) then ns.UpdateSelf() end
+		-- The rank Medborgare shows in the roster.
+		if ns.CheckAchievementsSoon then ns.CheckAchievementsSoon() end
 		if ns.OnEvent then ns.OnEvent(event, ...) end
 	elseif event == "PLAYER_MONEY" then OnMoney()
 	elseif event == "CHAT_MSG_MONEY" then OnLootMessage()
@@ -889,6 +926,10 @@ ns.events = events
 
 local LEADER_COMMANDS = { rate = true, forgive = true, credit = true, sync = true }
 
+-- /yrken opens the Yrken window (Zach 9/11), as /skatt yrken does.
+SLASH_SKATTYRKEN1 = "/yrken"
+SlashCmdList.SKATTYRKEN = function() SlashCmdList.SKATTEVERKET("yrken") end
+
 SLASH_SKATTEVERKET1 = "/skatt"
 SlashCmdList.SKATTEVERKET = function(msg)
 	local cmd, rest = (msg or ""):match("^%s*(%S*)%s*(.-)%s*$")
@@ -905,6 +946,12 @@ SlashCmdList.SKATTEVERKET = function(msg)
 		ns.ShowHelp()
 	elseif cmd == "news" then
 		ns.ToggleWindow(4)
+	elseif cmd == "prestationstest" and ns.PRESTATIONER then
+		ns.AchievementTest(rest)
+	elseif cmd == "prestationer" and ns.PRESTATIONER then
+		ns.ToggleWindow(7)
+	elseif cmd == "ikontest" then
+		ns.IconTest()
 	elseif cmd == "tystsignera" then
 		ns.SignQuietly()
 	elseif cmd == "yrkestest" then
@@ -928,7 +975,7 @@ SlashCmdList.SKATTEVERKET = function(msg)
 		if not IsGuildLeader() then Print("bara guildledaren kan göra det.") return end
 		ns.LeaderCommand(cmd, rest)
 	else
-		Print("/skatt öppnar fönstret, /skatt info visar din skatt, /skatt betala betalar vid guildbanken, /skatt anmälan visar din anmälan, /skatt yrken visar yrkesregistret, /skatt hjälp visar villkor och vanliga frågor, /skatt nytt visar vad som är nytt.")
+		Print("/skatt öppnar fönstret, /skatt info visar din skatt, /skatt betala betalar vid guildbanken, /skatt anmälan visar din anmälan, /skatt yrken visar yrkesregistret, /skatt hjälp visar villkor och vanliga frågor, /skatt nytt visar vad som är nytt, /skatt prestationer visar prestationer.")
 		Print("Guildledaren: /skatt sats 5, /skatt efterskänk Namn, /skatt kredit Namn 2g50s, /skatt synka.")
 	end
 end

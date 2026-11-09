@@ -397,9 +397,9 @@ events:SetScript("OnEvent", function(_, event, ...)
 end)
 
 SLASH_SWEDBANK1 = "/swedbank"
--- Swedbank has no window of its own since 0.10: its pages are the Swedbank
--- tab of the THÖNDERSTÖRM panel, which Skatteverket owns (Zach 8/11).
--- Skatteverket builds the tab with SwedbankPanel when the panel first opens.
+-- Swedbank's pages live in a THÖNDERSTÖRM window that Skatteverket owns
+-- (Zach 8/11; its own window since 9/11, no longer a tab of one panel).
+-- Skatteverket builds them with SwedbankPanel when the window first opens.
 SwedbankPanel = {}
 function SwedbankPanel.Build(page, panel)
 	ns.BuildMember(page, panel)

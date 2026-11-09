@@ -92,6 +92,17 @@ function ns.ServeBoard()
 		length = length + #row + 1
 	end
 	if #chunk > 0 then table.insert(chunks, "Z;" .. table.concat(chunk, ";")) end
+	-- Achievements too, so members see those of the offline.
+	chunk, length = {}, 2
+	for _, row in ipairs(ns.AchievementRows(roster)) do
+		if length + #row + 1 > 250 then
+			table.insert(chunks, "I;" .. table.concat(chunk, ";"))
+			chunk, length = {}, 2
+		end
+		table.insert(chunk, row)
+		length = length + #row + 1
+	end
+	if #chunk > 0 then table.insert(chunks, "I;" .. table.concat(chunk, ";")) end
 	for i, msg in ipairs(chunks) do
 		C_Timer.After(i * 0.3, function() ns.Send(msg) end)
 	end

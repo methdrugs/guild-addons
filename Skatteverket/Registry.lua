@@ -1,29 +1,34 @@
--- Skatteverket, the Yrken tab of the /skatt window: every profession with
--- how many registered members have it (Zach 7/11). Click a profession to
--- list those who have it, highest level first; click it again to close
--- the list. The search box finds recipes across the guild (Recipes.lua);
--- click a result to whisper the crafter. Click a member in a profession's
--- list to open their recipes in a window like the profession window
--- (RecipeWindow.lua, Zach 7/11). Min anmälan shows this
--- character's registration in the same panel, where main or alt and
--- interests can be changed.
+-- Skatteverket, the Yrken window (Zach 9/11, redone): compact like the
+-- game's profession window. A dropdown picks the profession, primary and
+-- secondary apart, each with how many registered members have it; below,
+-- those who have it, highest level first. Click a member to open their
+-- recipes in a window like the profession window (RecipeWindow.lua, Zach
+-- 7/11), where a recipe can be ordered (Orders.lua). The search bar finds
+-- recipes across the guild (Recipes.lua); click a result to
+-- whisper the crafter. Min anmälan, this character's registration where main
+-- or alt and interests can be changed, sits under Inställningar (Zach 9/11).
 
 local _, ns = ...
 
-local ROWS, ROW_H = 12, 18
-local CELL_W, CELL_H = 158, 38
-local COLS = { { "Nr", 70 }, { "Namn", 170 }, { "Level", 50 }, { "Typ", 50 }, { "Intressen", 130 } }
-local FOUND_COLS = { { "Recept", 200 }, { "Namn", 160 }, { "Yrke", 110 } }
+local ROWS, ROW_H = 16, 18
+local COLS = { { "Nr", 60 }, { "Namn", 150 }, { "Level", 45 }, { "Typ", 45 }, { "Intressen", 100 } }
+local FOUND_COLS = { { "Recept", 170 }, { "Namn", 140 }, { "Yrke", 90 } }
+local SECONDARY = { COO = true, FA = true, FIS = true }
+local LIST_W = 400
 
-local page, rows, cells, sorted, found = nil, {}, {}, {}, {}
+local page, rows, sorted, found, counts = nil, {}, {}, {}, {}
 local offset, filter, search = 0, nil, ""
-local listWidth = 470
 
 local function Text(parent, template, ...)
 	local fs = parent:CreateFontString(nil, "OVERLAY", template)
 	fs:SetPoint(...)
 	fs:SetJustifyH("LEFT")
 	return fs
+end
+
+local function HasTemplate(name)
+	if C_XMLUtil and C_XMLUtil.GetTemplateInfo then return C_XMLUtil.GetTemplateInfo(name) ~= nil end
+	return true
 end
 
 local function Cells(row, cols)
@@ -40,7 +45,8 @@ end
 
 local function Headers(cols)
 	local f = CreateFrame("Frame", nil, page)
-	f:SetSize(listWidth, 16)
+	f:SetSize(LIST_W, 16)
+	f:SetPoint("TOPLEFT", 24, -88)
 	local x = 0
 	for _, col in ipairs(cols) do
 		Text(f, "GameFontNormalSmall", "TOPLEFT", x, 0):SetText(col[1])
@@ -51,10 +57,18 @@ end
 
 -- Hover a recipe: the item's (or spell's) own tooltip, like the profession window.
 local function RecipeTooltip(self)
-	if not self.link then return end
-	GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-	GameTooltip:SetHyperlink(self.link)
-	GameTooltip:Show()
+	if self.link then
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:SetHyperlink(self.link)
+		GameTooltip:Show()
+	elseif self.member then
+		local m = ns.db.members[self.member]
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:AddLine(self.member)
+		if m and m.interests and m.interests ~= "" then GameTooltip:AddLine("Intressen: " .. ns.InterestText(m.interests), 1, 1, 1) end
+		GameTooltip:AddLine("Klicka för att se deras recept och beställa.", 0.7, 0.7, 0.7)
+		GameTooltip:Show()
+	end
 end
 
 local function InsertLink(link)
@@ -68,64 +82,102 @@ local function Whisper(name)
 	elseif ChatFrameUtil and ChatFrameUtil.SendTell then ChatFrameUtil.SendTell(name) end
 end
 
--- One profession in the grid: icon, name and the number of members, like
--- the skill lines of the Character window.
-local function Cell(p)
-	local b = CreateFrame("Button", nil, page)
-	b:SetSize(CELL_W - 8, CELL_H - 6)
-	b:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
-	b.icon = b:CreateTexture(nil, "ARTWORK")
-	b.icon:SetSize(28, 28)
-	b.icon:SetPoint("LEFT", 2, 0)
-	b.icon:SetTexture("Interface\\Icons\\" .. p.icon)
-	b.label = Text(b, "GameFontHighlightSmall", "TOPLEFT", b.icon, "TOPRIGHT", 6, -1)
-	b.label:SetText(p.label)
-	b.count = Text(b, "GameFontNormal", "BOTTOMLEFT", b.icon, "BOTTOMRIGHT", 6, 1)
-	b:SetScript("OnClick", function()
-		filter = filter ~= p.code and p.code or nil
-		offset = 0
-		if filter then page.search:SetText("") end
-		ns.RefreshRegistry()
+local function Label(p)
+	local n = counts[p.code] or 0
+	return string.format("%s (%d)", p.label, n)
+end
+
+local function Choose(code)
+	filter, offset, search = code, 0, ""
+	if page.search then page.search:SetText("") end
+	ns.RefreshRegistry()
+end
+
+-- The profession dropdown: the modern menu where the client has it, the
+-- old UIDropDownMenu otherwise; primary professions, a line, secondary.
+local function Dropdown(parent)
+	local function Groups()
+		local primary, secondary = {}, {}
+		for _, p in ipairs(ns.PROFESSIONS) do table.insert(SECONDARY[p.code] and secondary or primary, p) end
+		return primary, secondary
+	end
+	if HasTemplate("WowStyle1DropdownTemplate") then
+		local ok, d = pcall(CreateFrame, "DropdownButton", nil, parent, "WowStyle1DropdownTemplate")
+		if ok and d and d.SetupMenu then
+			d:SetWidth(200)
+			if d.SetDefaultText then d:SetDefaultText("Välj yrke") end
+			d:SetupMenu(function(_, root)
+				local primary, secondary = Groups()
+				root:CreateTitle("Primära yrken")
+				for _, p in ipairs(primary) do root:CreateRadio(Label(p), function() return filter == p.code end, function() Choose(p.code) end) end
+				if root.CreateDivider then root:CreateDivider() end
+				root:CreateTitle("Sekundära yrken")
+				for _, p in ipairs(secondary) do root:CreateRadio(Label(p), function() return filter == p.code end, function() Choose(p.code) end) end
+			end)
+			d.Update = function(self) if self.GenerateMenu then self:GenerateMenu() end end
+			return d
+		end
+	end
+	local d = CreateFrame("Frame", nil, parent, "UIDropDownMenuTemplate")
+	UIDropDownMenu_SetWidth(d, 170)
+	UIDropDownMenu_Initialize(d, function()
+		local primary, secondary = Groups()
+		for _, group in ipairs({ { "Primära yrken", primary }, { "Sekundära yrken", secondary } }) do
+			local title = UIDropDownMenu_CreateInfo()
+			title.text, title.isTitle, title.notCheckable = group[1], true, true
+			UIDropDownMenu_AddButton(title)
+			for _, p in ipairs(group[2]) do
+				local info = UIDropDownMenu_CreateInfo()
+				info.text, info.checked = Label(p), filter == p.code
+				info.func = function() Choose(p.code) end
+				UIDropDownMenu_AddButton(info)
+			end
+		end
 	end)
-	b:SetScript("OnEnter", function(self)
-		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-		GameTooltip:AddLine(p.label .. " (" .. p.name .. ")")
-		GameTooltip:AddLine("Klicka för att se vilka som har det.", 1, 1, 1)
-		GameTooltip:Show()
-	end)
-	b:SetScript("OnLeave", function() GameTooltip:Hide() end)
-	b.code = p.code
-	return b
+	d.Update = function(self)
+		local p = filter and ns.PROFESSION_BY_CODE[filter]
+		UIDropDownMenu_SetText(self, p and Label(p) or "Välj yrke")
+	end
+	return d
 end
 
 function ns.BuildRegistry(parent)
 	page = parent
-	Text(page, "GameFontNormal", "TOPLEFT", 24, -70):SetText("Yrken i " .. ns.GUILD)
-
-	-- Recipe search, top right of the inset.
-	page.search = CreateFrame("EditBox", nil, page, "InputBoxTemplate")
-	page.search:SetSize(160, 20)
+	-- Under the title, beside the portrait: the profession, and the recipe
+	-- search across the guild (Zach 9/11: a plain search bar).
+	page.pick = Dropdown(page)
+	page.pick:SetPoint("TOPLEFT", 66, -30)
+	page.search = CreateFrame("EditBox", nil, page, "SearchBoxTemplate")
+	if not page.search.Instructions then
+		page.search:Hide()
+		page.search = CreateFrame("EditBox", nil, page, "InputBoxTemplate")
+	end
+	page.search:SetSize(150, 20)
+	page.search:SetPoint("LEFT", page.pick, "RIGHT", 12, 0)
 	page.search:SetAutoFocus(false)
-	page.search:SetScript("OnEscapePressed", page.search.ClearFocus)
-	page.search:SetScript("OnEnterPressed", page.search.ClearFocus)
-	page.search:SetScript("OnTextChanged", function(self)
+	if page.search.Instructions then page.search.Instructions:SetText("Sök recept") end
+	page.search:HookScript("OnEscapePressed", function(self) self:ClearFocus() end)
+	page.search:HookScript("OnEnterPressed", function(self) self:ClearFocus() end)
+	page.search:HookScript("OnTextChanged", function(self)
 		search = strtrim(self:GetText() or "")
 		offset = 0
-		if search ~= "" then filter = nil end
 		ns.RefreshRegistry()
 	end)
-	page.searchLabel = Text(page, "GameFontNormalSmall", "RIGHT", page.search, "LEFT", -10, 0)
-	page.searchLabel:SetText("Sök recept:")
+	page.search:HookScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:AddLine("Sök recept i hela guildet")
+		GameTooltip:Show()
+	end)
+	page.search:HookScript("OnLeave", function() GameTooltip:Hide() end)
 
-	for i, p in ipairs(ns.PROFESSIONS) do cells[i] = Cell(p) end
-
-	page.listTitle = page:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-	page.listTitle:SetJustifyH("LEFT")
+	page.listTitle = Text(page, "GameFontNormal", "TOPLEFT", 24, -68)
+	page.listTitle:SetWidth(LIST_W)
 	page.headers = Headers(COLS)
 	page.foundHeaders = Headers(FOUND_COLS)
 	for i = 1, ROWS do
 		local row = CreateFrame("Button", nil, page)
-		row:SetSize(listWidth, ROW_H)
+		row:SetSize(LIST_W, ROW_H)
+		row:SetPoint("TOPLEFT", 20, -104 - (i - 1) * ROW_H)
 		row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
 		row.cells = Cells(row, COLS)
 		row.found = Cells(row, FOUND_COLS)
@@ -139,46 +191,14 @@ function ns.BuildRegistry(parent)
 		rows[i] = row
 	end
 	page.count = Text(page, "GameFontDisableSmall", "BOTTOMLEFT", 24, 34)
-	page.count:SetWidth(470)
+	page.count:SetWidth(LIST_W)
 
-	local mine = CreateFrame("Button", nil, page, "UIPanelButtonTemplate")
-	mine:SetSize(120, 22)
-	mine:SetText("Min anmälan")
-	mine:SetPoint("BOTTOMLEFT", 8, 4)
-	mine:SetScript("OnClick", function() ns.ShowTab(3) end)
-
-	ns.LayoutRegistry(520)
 	page:EnableMouseWheel(true)
 	page:SetScript("OnMouseWheel", function(_, delta)
-		local total = search ~= "" and #found or #sorted
+		local total = #search >= 2 and #found or #sorted
 		offset = math.max(0, math.min(offset - delta, total - ROWS))
 		ns.RefreshRegistry()
 	end)
-end
-
--- The grid fills the window's width: 3 columns in the members' window, 6
--- in the leader's wide one, with the list right under the last row.
-function ns.LayoutRegistry(width)
-	if not page then return end
-	local cols = math.max(1, math.min(6, math.floor((width - 40) / CELL_W)))
-	for i, b in ipairs(cells) do
-		local col, row = (i - 1) % cols, math.floor((i - 1) / cols)
-		b:ClearAllPoints()
-		b:SetPoint("TOPLEFT", 20 + col * CELL_W, -92 - row * CELL_H)
-	end
-	page.search:ClearAllPoints()
-	page.search:SetPoint("TOPLEFT", math.min(width, 520) - 190, -64)
-	local top = -92 - math.ceil(#cells / cols) * CELL_H - 8
-	page.listTitle:ClearAllPoints()
-	page.listTitle:SetPoint("TOPLEFT", 24, top)
-	for _, headers in ipairs({ page.headers, page.foundHeaders }) do
-		headers:ClearAllPoints()
-		headers:SetPoint("TOPLEFT", 24, top - 20)
-	end
-	for i, row in ipairs(rows) do
-		row:ClearAllPoints()
-		row:SetPoint("TOPLEFT", 20, top - 36 - (i - 1) * ROW_H)
-	end
 end
 
 local function ShowCells(list, shown)
@@ -193,7 +213,8 @@ function ns.RefreshRegistry()
 	if not page or not page:IsVisible() then return end
 	local db = ns.db
 	local roster = ns.RosterNames()
-	local counts, levels = {}, {}
+	local levels = {}
+	wipe(counts)
 	wipe(sorted)
 	for name, m in pairs(db.members) do
 		if m.profileAt and (not roster or roster[name]) then
@@ -211,6 +232,7 @@ function ns.RefreshRegistry()
 		if na ~= nb then return na < nb end
 		return a < b
 	end)
+	page.pick:Update()
 
 	local searching = #search >= 2
 	if not searching then
@@ -220,19 +242,13 @@ function ns.RefreshRegistry()
 	end
 	offset = math.max(0, math.min(offset, (searching and #found or #sorted) - ROWS))
 
-	for _, b in ipairs(cells) do
-		local n = counts[b.code] or 0
-		b.count:SetText(n == 1 and "1 medlem" or n .. " medlemmar")
-		b.icon:SetDesaturated(n == 0 or (filter ~= nil and b.code ~= filter))
-		if b.code == filter then b:LockHighlight() else b:UnlockHighlight() end
-	end
-
 	if searching then
 		page.listTitle:SetText(string.format("Recept med \"%s\"", search))
 	elseif filter then
-		page.listTitle:SetText(ns.PROFESSION_BY_CODE[filter].label .. "  |cffffffff(klicka på ett namn för att se deras recept)|r")
+		local n = #sorted
+		page.listTitle:SetText(string.format("%s: %s", ns.PROFESSION_BY_CODE[filter].label, n == 1 and "1 medlem" or n .. " medlemmar"))
 	else
-		page.listTitle:SetText("Klicka på ett yrke för att se vilka som har det.")
+		page.listTitle:SetText("Välj ett yrke i listan ovan.")
 	end
 	if filter and not searching then page.headers:Show() else page.headers:Hide() end
 	if searching then page.foundHeaders:Show() else page.foundHeaders:Hide() end
@@ -256,7 +272,7 @@ function ns.RefreshRegistry()
 				row:Hide()
 			end
 		else
-			local name = sorted[i + offset]
+			local name = filter and sorted[i + offset]
 			local m = name and db.members[name]
 			if m then
 				local values = { ns.Number(m.number) or "-", name, levels[name], m.main and "Main" or "Alt", ns.InterestText(m.interests) }
@@ -272,9 +288,9 @@ function ns.RefreshRegistry()
 	if searching then
 		local sharing = 0
 		for name in pairs(db.recipes) do if not roster or roster[name] then sharing = sharing + 1 end end
-		local shown = #found > ROWS and string.format("Visar %d-%d av %d (scrolla med mushjulet). ", offset + 1, math.min(offset + ROWS, #found), #found)
+		local shown = #found > ROWS and string.format("Visar %d-%d av %d (scrolla). ", offset + 1, math.min(offset + ROWS, #found), #found)
 			or #found == 0 and "Ingen i guildet kan det receptet, eller så har de inte delat sina recept än. " or ""
-		page.count:SetText(shown .. string.format("Klicka för att viska, shift-klick länkar i chatten; grå är offline, skicka post. %d medlemmar delar sina recept.", sharing))
+		page.count:SetText(shown .. string.format("Klicka för att viska, shift-klick länkar; grå är offline. %d medlemmar delar sina recept.", sharing))
 		return
 	end
 	local missing = 0
@@ -284,7 +300,7 @@ function ns.RefreshRegistry()
 	end
 	local shown = ""
 	if filter and #sorted > ROWS then
-		shown = string.format("Visar %d-%d av %d (scrolla med mushjulet). ", offset + 1, math.min(offset + ROWS, #sorted), #sorted)
+		shown = string.format("Visar %d-%d av %d (scrolla). ", offset + 1, math.min(offset + ROWS, #sorted), #sorted)
 	elseif filter and #sorted == 0 then
 		shown = "Ingen registrerad har det yrket än. "
 	end
@@ -334,17 +350,12 @@ function ns.BuildMine(parent)
 	end
 
 	mine.note = Text(mine, "GameFontDisableSmall", "TOPLEFT", 24, -360)
-	mine.note:SetWidth(470)
+	mine.note:SetWidth(390)
 
-	local back = CreateFrame("Button", nil, mine, "UIPanelButtonTemplate")
-	back:SetSize(100, 22)
-	back:SetText("Tillbaka")
-	back:SetPoint("BOTTOMLEFT", 8, 4)
-	back:SetScript("OnClick", function() ns.ShowTab(2) end)
 	mine.save = CreateFrame("Button", nil, mine, "UIPanelButtonTemplate")
 	mine.save:SetSize(100, 22)
 	mine.save:SetText("Spara")
-	mine.save:SetPoint("LEFT", back, "RIGHT", 4, 0)
+	mine.save:SetPoint("BOTTOMLEFT", 8, 4)
 	mine.save:SetScript("OnClick", function()
 		local reg = ns.char.reg
 		if not reg then ns.ShowScroll() return end

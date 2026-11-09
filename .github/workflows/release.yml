@@ -1,4 +1,4 @@
-# Builds the zip with both addons when a version tag is pushed (wowaddons
+# Builds the zip with the three addons when a version tag is pushed (wowaddons
 # publish does that) and publishes it as a GitHub release for WowUp.
 name: Release
 
@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build zip and release.json
         run: |
-          zip -r "guild-addons-$GITHUB_REF_NAME.zip" Skatteverket Swedbank
+          zip -r "guild-addons-$GITHUB_REF_NAME.zip" Skatteverket Swedbank Bokforing
           interface=$(grep -m1 '^## Interface:' Skatteverket/Skatteverket.toc | tr -dc '0-9')
           cat > release.json <<EOF
           {"releases":[{"name":"guild-addons","version":"$GITHUB_REF_NAME","filename":"guild-addons-$GITHUB_REF_NAME.zip","nolib":false,"metadata":[{"flavor":"classic","interface":$interface}]}]}

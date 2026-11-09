@@ -1,15 +1,20 @@
--- The THÖNDERSTÖRM panel (Zach 8/11), owned by Skatteverket: a classic
--- panel with tabs (Zach 7/11): Skatt, Yrken, Swedbank, Nytt and
--- Inställningar. The Swedbank tab is built by the Swedbank addon
--- (SwedbankPanel), which has no window of its own. Skatt has your own tax at the top and everyone's standing below.
--- Members see no amounts of others, so a low level contributes as much as
--- a high one (Zach 6/11). Everyone's list, the leader's too, is ranked by
--- standing: favourites #1-3, then good, neutral, negative (Zach 7/11). The
--- guild leader also sees paid, owed, income, the bank log and last seen,
--- with paid deciding the order within a standing, and can set the rate,
--- give credit or forgive the selected member, and guild repairs paid from
--- the bank set against what each member has paid (Zach 8/11). Yrken is in
--- Registry.lua, Nytt in News.lua.
+-- The THÖNDERSTÖRM windows (Zach 9/11), owned by Skatteverket: one window
+-- per job instead of one panel for everything, since two panels on top of
+-- each other could not be brought to the front. Skatt (your own tax and
+-- everyone's standing), Yrken (professions, recipes and Arbetsorder, with
+-- Min anmälan), Swedbank (built by the Swedbank addon, SwedbankPanel), and
+-- Nytt and Inställningar, reached from the minimap button's right-click
+-- list. Each is a classic panel with the bolt as portrait, comes to the
+-- front when clicked and remembers where it was left.
+--
+-- Skatt: members see no amounts of others, so a low level contributes as
+-- much as a high one (Zach 6/11). Everyone's list, the leader's too, is
+-- ranked by standing: favourites #1-3, then good, neutral, negative (Zach
+-- 7/11). The guild leader also sees paid, owed, income, the bank log and
+-- last seen, with paid deciding the order within a standing, and can set the
+-- rate, give credit or forgive the selected member, and guild repairs paid
+-- from the bank set against what each member has paid (Zach 8/11). Yrken is
+-- in Registry.lua, Arbetsorder in Orders.lua, Nytt in News.lua.
 
 local _, ns = ...
 
@@ -23,8 +28,31 @@ local COLS = {}
 for _, col in ipairs(MEMBER_COLS) do table.insert(COLS, col) end
 for _, col in ipairs(LEADER_COLS) do table.insert(COLS, col) end
 
+-- The windows: global name, title, size, whether only citizens get in
+-- (locked), and whether the guild bank's balance shows under the title.
+-- Pages, as numbered since 0.12: 1 Skatt, 2 Yrken, 3 Min anmälan, 4 Nytt,
+-- 5 Inställningar, 6 Swedbank, 7 Prestationer, 8 Arbetsorder.
+local WINDOWS = {
+	-- A gold crown on a pile of coins, the king takes his share (Zach 9/11;
+	-- Media/Crown.tga, art/crown.sh; a hand taking a coin looked stiff in
+	-- game). The bolt stays on the minimap button.
+	skatt = { name = "SkatteverketFrame", title = "Skatteverket", h = FRAME_H, locked = true, bank = true, art = "Interface\\AddOns\\Skatteverket\\Media\\Crown" },
+	-- Portraits (Zach 9/11): a gold anvil and
+	-- hammer for Yrken and a gold bank for Swedbank, drawn in the bolt's
+	-- style (Media/Anvil.tga, Bank.tga; art/anvil.sh, bank.sh), the gear for
+	-- Inställningar and the paper scroll for Nytt.
+	yrken = { name = "SkatteverketYrkenFrame", title = "Yrken", w = 440, h = 480, locked = true, art = "Interface\\AddOns\\Skatteverket\\Media\\Anvil" },
+	swedbank = { name = "SkatteverketSwedbankFrame", title = "Swedbank", h = FRAME_H, locked = true, bank = true, art = "Interface\\AddOns\\Skatteverket\\Media\\Bank" },
+	nytt = { name = "SkatteverketNyttFrame", title = "Nytt", w = MEMBER_W, h = FRAME_H, art = "Interface\\Icons\\INV_Misc_Note_01" },
+	options = { name = "SkatteverketOptionsFrame", title = "Inställningar", w = MEMBER_W, h = 480, art = "Interface\\Icons\\INV_Misc_Gear_01" },
+	prestationer = { name = "SkatteverketPrestationerFrame", title = "Prestationer", w = MEMBER_W, h = FRAME_H },
+}
+-- Min anmälan sits with Inställningar (Zach 9/11): that is where things are changed.
+local PAGE_WINDOW = { "skatt", "yrken", "options", "nytt", "options", "swedbank", "prestationer", "yrken" }
+
 local frame, rows, headers, sorted = nil, {}, {}, {}
-local offset, selected, leaderMode, tab = 0, nil, false, 1
+local offset, selected, leaderMode = 0, nil, false
+local wins = {}
 
 local function Text(parent, template, ...)
 	local fs = parent:CreateFontString(nil, "OVERLAY", template)
@@ -64,17 +92,17 @@ end
 -- The classic panel (Zach 7/11): portrait, title bar and a recessed inset,
 -- like the Character and Social windows. Falls back to the old dialog
 -- look if a client lacks the template.
-local function Panel()
+local function Panel(name, titleText, art)
 	local ok, f = false, nil
-	if HasTemplate("ButtonFrameTemplate") then ok, f = pcall(CreateFrame, "Frame", "SkatteverketFrame", UIParent, "ButtonFrameTemplate") end
+	if HasTemplate("ButtonFrameTemplate") then ok, f = pcall(CreateFrame, "Frame", name, UIParent, "ButtonFrameTemplate") end
 	if ok and f then
 		-- The guild's lightning bolt, as on the minimap button (Media/Bolt.tga,
 		-- art/bolt.sh, Zach 8/11). The first portrait try left an empty
 		-- circle (screenshot 7/11), so every way the template versions name
 		-- the portrait is tried.
-		local art = "Interface\\AddOns\\Skatteverket\\Media\\Bolt"
+		art = art or "Interface\\AddOns\\Skatteverket\\Media\\Bolt"
 		local portrait = f.portrait or f.Portrait or (f.PortraitContainer and f.PortraitContainer.portrait)
-			or _G["SkatteverketFramePortrait"]
+			or _G[name .. "Portrait"]
 		if f.SetPortraitToAsset then
 			f:SetPortraitToAsset(art)
 		elseif portrait then
@@ -82,10 +110,10 @@ local function Panel()
 		end
 		if portrait then portrait:Show() end
 		local title = f.TitleText or (f.TitleContainer and f.TitleContainer.TitleText)
-		if title then title:SetText(ns.GUILD) end
+		if title then title:SetText(titleText) end
 		return f, true
 	end
-	f = CreateFrame("Frame", "SkatteverketFrame", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+	f = CreateFrame("Frame", name, UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
 	f:SetBackdrop({
 		bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
 		edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
@@ -98,54 +126,81 @@ local function Panel()
 	header:SetPoint("TOP", 0, 12)
 	local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 	title:SetPoint("TOP", header, "TOP", 0, -14)
-	title:SetText(ns.GUILD)
+	title:SetText(titleText)
 	local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
 	close:SetPoint("TOPRIGHT", -6, -6)
 	return f, false
 end
 
--- The page each tab button opens: tab 1 Skatt, 2 Yrken (page 3, Min
--- anmälan, sits under it), 3 Swedbank (page 6), 4 Nytt (page 4), 5
--- Inställningar (page 5).
-local TAB_PAGE = { 1, 2, 6, 4, 5 }
-local PAGE_TAB = { 1, 2, 2, 4, 5, 3 }
-
--- Tabs along the bottom edge, as on the Character window.
-local function Tab(i, label)
-	local name = "SkatteverketFrameTab" .. i
-	local button
-	for _, template in ipairs({ "CharacterFrameTabButtonTemplate", "PanelTabButtonTemplate" }) do
-		if HasTemplate(template) then
-			local ok, b = pcall(CreateFrame, "Button", name, frame, template)
-			if ok and b then button = b break end
-		end
+-- Where each window was left (Zach 9/11), saved for the account.
+local function Place(id, f)
+	local saved = ns.db.windows and ns.db.windows[id]
+	f:ClearAllPoints()
+	if saved then
+		f:SetPoint(saved[1], UIParent, saved[2], saved[3], saved[4])
+	else
+		f:SetPoint("CENTER")
 	end
-	button = button or Button(frame, label, 90)
-	button:SetID(i)
-	button:SetText(label)
-	if PanelTemplates_TabResize then pcall(PanelTemplates_TabResize, button, 0) end
-	button:SetScript("OnClick", function() ns.ShowTab(TAB_PAGE[i]) if PlaySound and SOUNDKIT then PlaySound(SOUNDKIT.IG_CHARACTER_INFO_TAB) end end)
-	return button
 end
 
-local function Build()
-	local classic
-	frame, classic = Panel()
-	frame:SetSize(MEMBER_W, FRAME_H)
-	frame:SetPoint("CENTER")
-	frame:SetFrameStrata("DIALOG")
-	frame:SetClampedToScreen(true)
-	frame:SetMovable(true)
-	frame:EnableMouse(true)
-	frame:RegisterForDrag("LeftButton")
-	frame:SetScript("OnDragStart", frame.StartMoving)
-	frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
-	tinsert(UISpecialFrames, "SkatteverketFrame")
+local function Remember(id, f)
+	local point, _, relative, x, y = f:GetPoint(1)
+	ns.db.windows = ns.db.windows or {}
+	ns.db.windows[id] = { point, relative, x, y }
+end
 
-	-- Beside the portrait, above the inset: the guild bank's last known balance.
-	frame.bank = Text(frame, "GameFontHighlightSmall", "TOPLEFT", classic and 66 or 24, -34)
+-- A bookmark tab on a window's right edge, like the spellbook's.
+local function SideTab(parent, k, icon, tip, onClick)
+	local tab = CreateFrame("CheckButton", nil, parent)
+	tab:SetSize(32, 32)
+	tab:SetPoint("TOPLEFT", parent, "TOPRIGHT", 0, -48 - (k - 1) * 48)
+	local back = tab:CreateTexture(nil, "BACKGROUND")
+	back:SetTexture("Interface\\SpellBook\\SpellBook-SkillLineTab")
+	back:SetSize(64, 64)
+	back:SetPoint("TOPLEFT", -3, 11)
+	tab:SetNormalTexture("Interface\\Icons\\" .. icon)
+	-- Glows by hand with additive blending; given by path the checked one
+	-- drew plain and the icon went black (7/11).
+	local glow = tab:CreateTexture(nil, "HIGHLIGHT")
+	glow:SetTexture("Interface\\Buttons\\ButtonHilight-Square")
+	glow:SetBlendMode("ADD")
+	glow:SetAllPoints()
+	local checked = tab:CreateTexture(nil, "OVERLAY")
+	checked:SetTexture("Interface\\Buttons\\CheckButtonHilight")
+	checked:SetBlendMode("ADD")
+	checked:SetAllPoints()
+	tab:SetCheckedTexture(checked)
+	tab:SetScript("OnClick", function()
+		onClick()
+		if PlaySound and SOUNDKIT then PlaySound(SOUNDKIT.IG_ABILITY_PAGE_TURN) end
+	end)
+	tab:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:AddLine(tip)
+		GameTooltip:Show()
+	end)
+	tab:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	return tab
+end
 
-	-- Page 1: Skatt.
+-- The page shown to those who have not signed, or wait for the rank.
+local function LockedPage(f)
+	local locked = CreateFrame("Frame", nil, f)
+	locked:SetAllPoints()
+	locked.title = Text(locked, "GameFontNormalLarge", "TOP", 0, -120)
+	locked.why = Text(locked, "GameFontHighlight", "TOP", 0, -156)
+	locked.why:SetWidth(380)
+	locked.why:SetJustifyH("CENTER")
+	locked.sign = Button(locked, "Anmäl dig", 140, function() f:Hide() ns.ShowScroll() end)
+	locked.sign:SetPoint("TOP", -74, -236)
+	local help = Button(locked, "Villkor och hjälp", 140, function() f:Hide() ns.ShowHelp() end)
+	help:SetPoint("LEFT", locked.sign, "RIGHT", 8, 0)
+	locked:Hide()
+	return locked
+end
+
+-- Page 1: Skatt.
+local function BuildTax()
 	local tax = CreateFrame("Frame", nil, frame)
 	tax:SetAllPoints()
 	frame.tax = tax
@@ -240,113 +295,146 @@ local function Build()
 		ns.RefreshWindow()
 	end)
 
-	-- Page 2: Yrken, built in Registry.lua.
-	frame.professions = CreateFrame("Frame", nil, frame)
-	frame.professions:SetAllPoints()
-	ns.BuildRegistry(frame.professions)
+end
 
-	-- Page 5: Nytt, built in News.lua; open to everyone, signed or not.
-	frame.news = CreateFrame("Frame", nil, frame)
-	frame.news:SetAllPoints()
-	ns.BuildNews(frame.news)
-
-	-- Page 6: Swedbank, built by the Swedbank addon; closed like Skatt.
-	frame.swed = CreateFrame("Frame", nil, frame)
-	frame.swed:SetAllPoints()
-	if SwedbankPanel then
-		SwedbankPanel.Build(frame.swed, frame)
-	else
-		Text(frame.swed, "GameFontHighlight", "TOP", 0, -140):SetText("Swedbank är inte installerat.")
+local function Build(id)
+	local def = WINDOWS[id]
+	local f, classic = Panel(def.name, def.title, def.art)
+	local w = { id = id, frame = f, page = nil }
+	wins[id] = w
+	f:SetSize(def.w or MEMBER_W, def.h)
+	-- The same layer as Bokföring's and the recipe window, and to the front
+	-- when clicked (Zach 9/11: one stuck behind the other).
+	f:SetFrameStrata("HIGH")
+	f:SetToplevel(true)
+	f:SetClampedToScreen(true)
+	f:SetMovable(true)
+	f:EnableMouse(true)
+	f:RegisterForDrag("LeftButton")
+	f:SetScript("OnDragStart", f.StartMoving)
+	f:SetScript("OnDragStop", function(self)
+		self:StopMovingOrSizing()
+		Remember(id, self)
+	end)
+	tinsert(UISpecialFrames, def.name)
+	Place(id, f)
+	if def.bank then
+		-- Beside the portrait, above the inset: the guild bank's last known balance.
+		f.bank = Text(f, "GameFontHighlightSmall", "TOPLEFT", classic and 66 or 24, -34)
 	end
 
-	-- Inställningar, built in Options.lua; open to everyone too.
-	frame.options = CreateFrame("Frame", nil, frame)
-	frame.options:SetAllPoints()
-	ns.BuildOptions(frame.options)
-
-	-- Page 4: closed until the character has signed (Zach 7/11).
-	local locked = CreateFrame("Frame", nil, frame)
-	locked:SetAllPoints()
-	frame.locked = locked
-	locked.title = Text(locked, "GameFontNormalLarge", "TOP", 0, -120)
-	locked.why = Text(locked, "GameFontHighlight", "TOP", 0, -156)
-	locked.why:SetWidth(400)
-	locked.why:SetJustifyH("CENTER")
-	locked.sign = Button(locked, "Anmäl dig", 140, function() frame:Hide() ns.ShowScroll() end)
-	locked.sign:SetPoint("TOP", -74, -236)
-	local help = Button(locked, "Villkor och hjälp", 140, function() frame:Hide() ns.ShowHelp() end)
-	help:SetPoint("LEFT", locked.sign, "RIGHT", 8, 0)
-
-	-- Page 3: Min anmälan, opened from the Yrken tab; Yrken stays the selected tab.
-	frame.mine = CreateFrame("Frame", nil, frame)
-	frame.mine:SetAllPoints()
-	ns.BuildMine(frame.mine)
-
-	frame.tabs = { Tab(1, "Skatt"), Tab(2, "Yrken"), Tab(3, "Swedbank"), Tab(4, "Nytt"), Tab(5, "Inställningar") }
-	frame.tabs[1]:SetPoint("TOPLEFT", frame, "BOTTOMLEFT", 12, classic and 2 or 6)
-	frame.tabs[2]:SetPoint("LEFT", frame.tabs[1], "RIGHT", -15, 0)
-	frame.tabs[3]:SetPoint("LEFT", frame.tabs[2], "RIGHT", -15, 0)
-	frame.tabs[4]:SetPoint("LEFT", frame.tabs[3], "RIGHT", -15, 0)
-	frame.tabs[5]:SetPoint("LEFT", frame.tabs[4], "RIGHT", -15, 0)
-	frame.Tabs = frame.tabs
-	if PanelTemplates_SetNumTabs then PanelTemplates_SetNumTabs(frame, #frame.tabs) end
+	if id == "skatt" then
+		frame = f
+		BuildTax()
+	elseif id == "yrken" then
+		f.professions = CreateFrame("Frame", nil, f)
+		f.professions:SetAllPoints()
+		ns.BuildRegistry(f.professions)
+		-- Arbetsorder (Zach 9/11): orders between members live with the
+		-- professions.
+		f.orders = CreateFrame("Frame", nil, f)
+		f.orders:SetAllPoints()
+		ns.BuildOrders(f.orders)
+		f.sideTabs = {
+			-- A book for the members' professions; the anvil is the portrait.
+			SideTab(f, 1, "INV_Misc_Book_11", "Yrken", function() ns.ShowTab(2) end),
+			SideTab(f, 2, "INV_Letter_15", "Arbetsorder", function() ns.ShowTab(8) end),
+		}
+	elseif id == "swedbank" then
+		f.swed = CreateFrame("Frame", nil, f)
+		f.swed:SetAllPoints()
+		if SwedbankPanel then
+			SwedbankPanel.Build(f.swed, f)
+		else
+			Text(f.swed, "GameFontHighlight", "TOP", 0, -140):SetText("Swedbank är inte installerat.")
+		end
+	elseif id == "nytt" then
+		f.news = CreateFrame("Frame", nil, f)
+		f.news:SetAllPoints()
+		ns.BuildNews(f.news)
+		ns.LayoutNews(def.w)
+	elseif id == "options" then
+		f.options = CreateFrame("Frame", nil, f)
+		f.options:SetAllPoints()
+		ns.BuildOptions(f.options)
+		f.mine = CreateFrame("Frame", nil, f)
+		f.mine:SetAllPoints()
+		ns.BuildMine(f.mine)
+		f.sideTabs = {
+			SideTab(f, 1, "INV_Misc_Gear_01", "Inställningar", function() ns.ShowTab(5) end),
+			SideTab(f, 2, "INV_Scroll_03", "Min anmälan", function() ns.ShowTab(3) end),
+		}
+	elseif id == "prestationer" then
+		f.achievements = CreateFrame("Frame", nil, f)
+		f.achievements:SetAllPoints()
+		ns.BuildAchievements(f.achievements)
+	end
+	if def.locked then f.locked = LockedPage(f) end
 
 	-- Ages and the Pay button change with time; refresh once a second.
-	frame:SetScript("OnUpdate", function(self, elapsed)
+	f:SetScript("OnUpdate", function(self, elapsed)
 		self.elapsed = (self.elapsed or 0) + elapsed
 		if self.elapsed > 1 then
 			self.elapsed = 0
-			ns.RefreshWindow()
+			ns.RefreshWindow(id)
 		end
 	end)
 	pcall(ns.events.RegisterEvent, ns.events, "GUILD_ROSTER_UPDATE")
-	-- A new frame starts shown; hide it so the first /skatt opens it instead of closing it.
-	frame:Hide()
+	-- A new frame starts shown; hide it so the first open shows it instead of closing it.
+	f:Hide()
+	return w
 end
 
-local function Layout()
-	-- Both tabs keep the same size, so switching does not jump (Zach 7/11).
-	local width = (leaderMode and not ns.Locked()) and LEADER_W or MEMBER_W
-	frame:SetWidth(width)
-	frame.count:SetWidth(width - 48)
-	for c, fs in ipairs(headers) do SetShown(fs, c <= #MEMBER_COLS or leaderMode) end
-	for _, row in ipairs(rows) do
-		row:SetWidth(width - 40)
-		for c, fs in ipairs(row.cells) do SetShown(fs, c <= #MEMBER_COLS or leaderMode) end
-	end
-	SetShown(frame.lead, leaderMode)
-	SetShown(frame.leaderInfo, leaderMode)
-	local locked = ns.Locked()
-	frame.lockState = locked
-	-- Nytt and Inställningar are open to everyone; the other tabs show the lock page.
+-- What a window shows: its page, or the lock page for those not let in.
+local function Layout(w)
+	local f, def, page = w.frame, WINDOWS[w.id], w.page
+	local locked = def.locked and ns.Locked()
+	w.lockState = locked
 	-- Someone not approved who has a loan running still gets Swedbank, to
 	-- see and pay it back; applying stays closed (Zach 8/11).
-	local swedOpen = not locked or (SwedbankPanel and SwedbankPanel.HasLoan and SwedbankPanel.HasLoan())
-	frame.swedOpen = swedOpen
-	local open = tab == 4 or tab == 5 or (tab == 6 and swedOpen)
-	SetShown(frame.locked, locked and not open)
-	if locked == "unsigned" then
-		frame.locked.title:SetText("Anmälan saknas")
-		frame.locked.why:SetText("Skatteverket visar bara uppgifter för godkända medborgare. Signera din anmälan, så öppnas allt här när guildledaren har gett dig rangen " .. ns.CITIZEN_RANK .. ": din skatt, guildets ställning, yrken och receptsök.")
-		frame.locked.sign:Enable()
-	elseif locked == "waiting" then
-		frame.locked.title:SetText("Väntar på godkännande")
-		frame.locked.why:SetText("Din anmälan är mottagen. Allt här öppnas när guildledaren har gett dig rangen " .. ns.CITIZEN_RANK .. ".")
-		frame.locked.sign:Disable()
+	if w.id == "swedbank" and locked and SwedbankPanel and SwedbankPanel.HasLoan and SwedbankPanel.HasLoan() then locked = nil end
+	w.open = not locked
+	if f.locked then
+		SetShown(f.locked, locked)
+		if locked == "unsigned" then
+			f.locked.title:SetText("Anmälan saknas")
+			f.locked.why:SetText("Skatteverket visar bara uppgifter för godkända medborgare. Signera din anmälan, så öppnas allt här när guildledaren har gett dig rangen " .. ns.CITIZEN_RANK .. ": din skatt, guildets ställning, yrken och receptsök.")
+			f.locked.sign:Enable()
+		elseif locked == "waiting" then
+			f.locked.title:SetText("Väntar på godkännande")
+			f.locked.why:SetText("Din anmälan är mottagen. Allt här öppnas när guildledaren har gett dig rangen " .. ns.CITIZEN_RANK .. ".")
+			f.locked.sign:Disable()
+		end
 	end
-	SetShown(frame.tax, tab == 1 and not locked)
-	SetShown(frame.professions, tab == 2 and not locked)
-	SetShown(frame.mine, tab == 3 and not locked)
-	SetShown(frame.news, tab == 4)
-	SetShown(frame.options, tab == 5)
-	SetShown(frame.swed, tab == 6 and swedOpen)
-	ns.LayoutRegistry(width)
-	ns.LayoutNews(width)
-	local selectedTab = PAGE_TAB[tab]
-	if PanelTemplates_SetTab then
-		PanelTemplates_SetTab(frame, selectedTab)
-	else
-		for i, b in ipairs(frame.tabs) do if i == selectedTab then b:Disable() else b:Enable() end end
+	if w.id == "skatt" or w.id == "swedbank" then
+		-- The leader's wide view (Zach 7/11).
+		local width = (leaderMode and not locked) and LEADER_W or MEMBER_W
+		f:SetWidth(width)
+	end
+	if w.id == "skatt" then
+		local width = f:GetWidth()
+		f.tax:SetShown(not locked)
+		f.count:SetWidth(width - 48)
+		for c, fs in ipairs(headers) do SetShown(fs, c <= #MEMBER_COLS or leaderMode) end
+		for _, row in ipairs(rows) do
+			row:SetWidth(width - 40)
+			for c, fs in ipairs(row.cells) do SetShown(fs, c <= #MEMBER_COLS or leaderMode) end
+		end
+		SetShown(f.lead, leaderMode)
+		SetShown(f.leaderInfo, leaderMode)
+	elseif w.id == "yrken" then
+		SetShown(f.professions, not locked and page == 2)
+		SetShown(f.orders, not locked and page == 8)
+		for _, t in ipairs(f.sideTabs) do SetShown(t, not locked) end
+		f.sideTabs[1]:SetChecked(page == 2)
+		f.sideTabs[2]:SetChecked(page == 8)
+	elseif w.id == "options" then
+		SetShown(f.options, page == 5)
+		SetShown(f.mine, page == 3)
+		f.sideTabs[1]:SetChecked(page == 5)
+		f.sideTabs[2]:SetChecked(page == 3)
+	elseif w.id == "swedbank" then
+		SetShown(f.swed, not locked)
 	end
 end
 
@@ -366,30 +454,8 @@ local function Repaired(name, m)
 	return (repaired > (m.paid or 0) and "|cffff4040" or "") .. ns.Money(repaired) .. (repaired > (m.paid or 0) and "|r" or "")
 end
 
-function ns.RefreshWindow()
-	if not frame or not frame:IsShown() then return end
+local function RefreshTax()
 	local db, char = ns.db, ns.char
-	-- Promoted while the window is open: it opens up at once.
-	if ns.Locked() ~= frame.lockState then Layout() end
-	if tab >= 4 then
-		frame.bank:SetText(frame.lockState and "" or BankText())
-		if tab == 4 then ns.RefreshNews()
-		elseif tab == 5 then ns.RefreshOptions()
-		elseif frame.swedOpen and SwedbankPanel then SwedbankPanel.Refresh() end
-		return
-	end
-	if frame.lockState then
-		frame.bank:SetText("")
-		return
-	end
-	frame.bank:SetText(BankText())
-	if tab == 2 then
-		ns.RefreshRegistry()
-		return
-	elseif tab == 3 then
-		ns.RefreshMine()
-		return
-	end
 	local top = ns.TopPayers()
 
 	if ns.InOurGuild() then
@@ -487,39 +553,70 @@ function ns.RefreshWindow()
 	end
 end
 
+
+-- Refresh one window, or every open one.
+function ns.RefreshWindow(id)
+	for wid, w in pairs(wins) do
+		local f = w.frame
+		if (not id or id == wid) and f:IsShown() then
+			-- Promoted while the window is open: it opens up at once.
+			if WINDOWS[wid].locked and ns.Locked() ~= w.lockState then Layout(w) end
+			if f.bank then f.bank:SetText(w.open and BankText() or "") end
+			if w.open then
+				if wid == "skatt" then RefreshTax()
+				elseif wid == "yrken" then
+					if w.page == 8 then ns.RefreshOrders() else ns.RefreshRegistry() end
+				elseif wid == "swedbank" and SwedbankPanel then SwedbankPanel.Refresh()
+				elseif wid == "nytt" then ns.RefreshNews()
+				elseif wid == "options" then
+					if w.page == 3 then ns.RefreshMine() else ns.RefreshOptions() end
+				elseif wid == "prestationer" then ns.RefreshAchievements()
+				end
+			end
+		end
+	end
+end
+
+-- Open the window that holds page n, on that page.
 function ns.ShowTab(n)
-	if not frame then Build() end
-	tab = n
+	local id = PAGE_WINDOW[n] or "skatt"
+	local w = wins[id] or Build(id)
+	w.page = n
 	if n == 3 then ns.ResetMine() end
-	if not frame:IsShown() then
+	if not w.frame:IsShown() then
 		leaderMode = IsGuildLeader() and ns.InOurGuild()
-		frame:Show()
-		if leaderMode then frame.lead.rate:SetText(string.format("%g", ns.db.rate * 100)) end
+		w.frame:Show()
+		if id == "skatt" and leaderMode then frame.lead.rate:SetText(string.format("%g", ns.db.rate * 100)) end
 		ns.RequestRoster()
 		ns.RequestBoard()
 	end
-	Layout()
-	ns.RefreshWindow()
+	Layout(w)
+	ns.RefreshWindow(id)
 end
 
--- /skatt and /skatt yrken: open on that tab, or close if it is already showing.
+-- /skatt, /skatt yrken and the rest: open that window on that page, or
+-- close it if it is already showing it.
 function ns.ToggleWindow(n)
 	n = n or 1
-	if frame and frame:IsShown() and tab == n then frame:Hide() return end
+	local w = wins[PAGE_WINDOW[n] or "skatt"]
+	if w and w.frame:IsShown() and w.page == n then
+		w.frame:Hide()
+		return
+	end
 	ns.ShowTab(n)
 end
 
--- For the Swedbank addon, which draws its pages in this panel (Zach 8/11).
-local PAGES = { tax = 1, professions = 2, swedbank = 6, news = 4, options = 5 }
+-- For the Swedbank addon and Bokföring (Zach 8/11, 9/11).
+local PAGES = { tax = 1, professions = 2, swedbank = 6, news = 4, options = 5, achievements = 7, orders = 8 }
 SkatteverketAPI = {
-	-- Open the panel on that page, or close it if it is already showing.
+	-- Open a window on that page, or close it if it is already showing.
 	Toggle = function(page) ns.ToggleWindow(PAGES[page] or 1) end,
 	-- This character's standing: "good", "neutral", "negative", or nil outside the guild.
 	Standing = function()
 		if not ns.char or not ns.InOurGuild() then return nil end
 		return ns.Standing(ns.char)
 	end,
-	-- Why this character cannot use the panel yet: "unsigned", "waiting", or nil.
+	-- Why this character cannot use the windows yet: "unsigned", "waiting", or nil.
 	Locked = function() return ns.Locked() end,
 	-- A member's standing as last seen, or nil if unknown.
 	MemberStanding = function(name)

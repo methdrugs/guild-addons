@@ -9,6 +9,17 @@ local _, ns = ...
 
 -- Newest first. Written for members: no amounts, nothing leader-only.
 ns.NOTES = {
+	-- 0.25, not 0.24: so much is new (Zach 9/11).
+	{ "0.25", "2026-11-09", {
+		"Bokföring (/bok, på engelska, kräver Auctionator): vilka av dina recept som tjänar mest och faktiskt säljer, inköpslistor till Auctionator, vad du håller på att tillverka och vad ditt craftande verkligen har gett.",
+		"Arbetsorder: beställ ett recept av någon under Yrken (Beställ i deras receptfönster). Välj antal, vem som står för materialet (gör hantverkaren det: 10 % av reagenskostnaden i dricks) och hur länge du kan vänta. De får en rad i guildchatten, och ordern under Arbetsorder i Yrken, även om de är offline. Bara för Medborgare. En hammare på minimapknappen betyder att någon väntar på dig.",
+		"Skatt, Yrken och Swedbank är egna fönster nu, som går att ha uppe samtidigt och flytta var för sig; de minns var du lämnade dem.",
+		"Yrken (/yrken): välj yrke i listan högst upp (primära och sekundära för sig). Sökrutan bredvid söker recept i hela guildet.",
+		"Min anmälan ligger nu under Inställningar.",
+		"Högerklicka på minimapknappen för att välja Skatt, Yrken, Swedbank eller Bokföring (om du har det), och under strecket Nytt och Inställningar.",
+		"Minimapknappen pulserar rött när din ställning är Negativ, tills skulden är betald.",
+		"Recept som delas medan guildledaren är offline skickas igen vid nästa inloggning, så de når fram.",
+	} },
 	{ "0.22", "2026-11-08", {
 		"THÖNDERSTÖRM-panelen: /skatt är nu guildets panel med flikarna Skatt, Yrken, Swedbank, Nytt och Inställningar, och blixten som porträtt.",
 		"Nytt: fliken Nytt med patchnoteringar för Skatteverket och Swedbank, efter datum. Öppnas av sig själv en gång efter en uppdatering (/skatt nytt).",

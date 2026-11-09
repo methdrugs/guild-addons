@@ -151,6 +151,8 @@ function ns.SendProfile()
 	ns.Send(string.format("Y;%d;%d;%s;%s", reg.number or 0, reg.main and 1 or 0, reg.interests or "", profs))
 	lastSent, profileDirty = profs, false
 	ns.SetProfile(me, reg.number, reg.main, reg.interests, profs, time())
+	-- Professions, recipes and the skattenummer can each earn one.
+	ns.CheckAchievementsSoon()
 end
 
 -- Ask the leader for a skattenummer until one comes; offline, it waits for
