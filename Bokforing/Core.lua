@@ -330,13 +330,21 @@ local function Schematic(ui, id)
 	}
 end
 
-function ns.Scan(upTo)
+-- quiet: the background run after login, without the tenths in chat.
+-- done: called when it has finished, also if it was already running.
+local scanDone = {}
+function ns.Scan(upTo, quiet, done)
 	local ui = C_TradeSkillUI
 	if not ui or not ui.GetRecipeSchematic then ns.Print("this client cannot look up recipes.") return end
-	if scanner then ns.Print("already scanning.") return end
+	if done then table.insert(scanDone, done) end
+	if scanner then
+		if not quiet then ns.Print("already scanning.") end
+		return
+	end
 	local last, id, found, step = upTo or SCAN_MAX, 0, {}, 0
 	local highest, count = 0, 0
-	ns.Print(string.format("scanning recipe numbers 1 to %d; this takes a minute or two, play on.", last))
+	ns.Print(quiet and "reading every recipe in the game once, in the background (a minute or two); All recipes fills in after."
+		or string.format("scanning recipe numbers 1 to %d; this takes a minute or two, play on.", last))
 	scanner = CreateFrame("Frame")
 	scanner:SetScript("OnUpdate", function(self)
 		local start = debugprofilestop()
@@ -348,8 +356,9 @@ function ns.Scan(upTo)
 				count, highest = count + 1, id
 			end
 		end
+		if ns.ReadProgress then ns.ReadProgress(string.format("Recipes %d%%", math.floor(id * 100 / last))) end
 		local tenth = math.floor(id * 10 / last)
-		if tenth > step and id < last then
+		if tenth > step and id < last and not quiet then
 			step = tenth
 			ns.Print(string.format("%d%%, %d recipes so far.", tenth * 10, count))
 		end
@@ -360,6 +369,9 @@ function ns.Scan(upTo)
 			ns.db.catalogAt = time()
 			ns.RowsChanged()
 			ns.Print(string.format("done: %d recipes, the highest number %d. All recipes now covers them.", count, highest))
+			local callbacks = scanDone
+			scanDone = {}
+			for _, f in ipairs(callbacks) do f() end
 			if ns.Refresh then ns.Refresh() end
 		end
 	end)
@@ -951,6 +963,22 @@ events:SetScript("OnEvent", function(_, event, name)
 	end
 end)
 
+-- Every command, for /bok help and the ? on the window (Zach 10/11).
+ns.HELP = {
+	{ "/bok", "opens and closes Bokföring" },
+	{ "Read recipes", "the button at the bottom: reads every recipe and recipe item in the game once" },
+	{ "Prices", "scan the auction house with Auctionator; Bokföring reads its scans" },
+	{ "Your recipes", "open each profession window once on each character" },
+	{ "/bok budget 50g", "how much Today may suggest spending a day; /bok budget off: a quarter of your gold" },
+	{ "/bok reset history", "erases the history and starts again" },
+	{ "/bok size", "how big the saved data is, and cleaning it" },
+	{ "/bok scan", "reads every recipe again" },
+	{ "/bok scan items", "reads the recipe items again (skill and where to get them)" },
+	{ "/bok ah", "scans the auction house with Bokföring itself" },
+	{ "/bok why name", "what a recipe lacks: a price, sales or profit a day" },
+	{ "/bok test", "checks Auctionator, the data and the timing, for bug reports" },
+}
+
 SLASH_BOKFORING1 = "/bok"
 SLASH_BOKFORING2 = "/bokforing"
 SlashCmdList.BOKFORING = function(msg)
@@ -993,6 +1021,22 @@ SlashCmdList.BOKFORING = function(msg)
 			end
 		end
 		ns.Print(catalog > 0 and string.format("Catalog: %d recipes, scanned %s.", catalog, date("%d/%m %H:%M", ns.db.catalogAt)) or "Catalog: empty, run /bok scan.")
+		-- Per profession, as the catalog names them (Zach 10/11: a
+		-- blacksmith's All recipes stayed empty after /bok scan).
+		local per = {}
+		for _, r in pairs(ns.db.catalog) do per[r.profession or "?"] = (per[r.profession or "?"] or 0) + 1 end
+		local parts = {}
+		for p, n in pairs(per) do table.insert(parts, p .. " " .. n) end
+		table.sort(parts)
+		if #parts > 0 then ns.Print("Catalog by profession: " .. table.concat(parts, ", ") .. ".") end
+		local me, learned = ns.MeKey(), {}
+		for _, r in pairs(ns.db.recipes) do
+			if r.by and r.by[me] then learned[r.profession or "?"] = (learned[r.profession or "?"] or 0) + 1 end
+		end
+		parts = {}
+		for p, n in pairs(learned) do table.insert(parts, p .. " " .. n) end
+		table.sort(parts)
+		ns.Print("Learned on this character: " .. (#parts > 0 and table.concat(parts, ", ") or "none read yet; open your profession windows") .. ".")
 		-- What the scan code has seen this session, to find why counts stay empty.
 		ns.Print("Mailbox: " .. (ns.MailTest and ns.MailTest() or "?") .. ".")
 		-- Sales noted from sold mails so far, newest first (Zach 9/11: did
@@ -1081,6 +1125,10 @@ SlashCmdList.BOKFORING = function(msg)
 	elseif msg == "reset history" then
 		-- A clean history (Zach 10/11), after a yes.
 		ns.ResetHistory()
+	elseif msg == "ah" then
+		-- Bokföring's own auction house scan; Auctionator's full scan feeds
+		-- Bokföring the same (Zach 10/11: the button now reads recipes).
+		ns.ScanAH()
 	elseif msg == "size" then
 		-- The size warning on demand (Zach 9/11), whatever the size.
 		ns.ShowSize()
@@ -1094,7 +1142,8 @@ SlashCmdList.BOKFORING = function(msg)
 			ns.Print("this client has no detailed scan.")
 		end
 	elseif msg == "help" then
-		ns.Print("/bok opens the list; open each profession window once so its recipes are read, and scan with Auctionator for prices. /bok test checks Auctionator. /bok size shows how big the saved data is, and can clean it. /bok reset history erases the history and starts again. /bok budget 50g sets how much Today may suggest spending a day (off: a quarter of your gold). /bok scan reads every recipe in the game once, for All recipes (/bok scan 2000000 to look further). /bok scan items reads the recipe items again, for the skill each recipe needs.")
+		ns.Print("commands:")
+		for _, line in ipairs(ns.HELP) do ns.Print("  " .. line[1] .. ": " .. line[2]) end
 	else
 		ns.Toggle()
 	end

@@ -539,7 +539,7 @@ function ns.RefreshMarket(frame)
 	view.top:SetText(high > 0 and ns.Money(top) or "")
 	view.bottom:SetText(high > 0 and ns.Money(low) or "")
 	view.empty:SetShown(high == 0)
-	view.empty:SetText(pick and "No prices yet: press Scan AH at the auction house." or "No items yet: craft something, or right-click a recipe and Watch its price.")
+	view.empty:SetText(pick and "No prices yet: scan with Auctionator at the auction house." or "No items yet: craft something, or right-click a recipe and Watch its price.")
 
 	local weekdays = Weekdays(days)
 	local most = 0.05

@@ -64,7 +64,7 @@ local function ListingLine(r)
 		GameTooltip:AddLine(string.format("%d for sale%s at the last scan%s", r.quantity, auctions, few and ": a thin market" or ""),
 			few and 1 or 0.6, few and 0.3 or 0.6, few and 0.3 or 0.6)
 	else
-		GameTooltip:AddLine("For sale unknown: press Scan AH at the auction house", 0.6, 0.6, 0.6)
+		GameTooltip:AddLine("For sale unknown: scan with Auctionator at the auction house", 0.6, 0.6, 0.6)
 	end
 end
 
@@ -319,6 +319,23 @@ local function Build()
 		ns.Refresh()
 	end)
 
+	-- A ? by the close button: every command on hover, in chat on a click
+	-- (Zach 10/11: /bok help should show on Bokföring itself).
+	local help = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+	help:SetSize(22, 20)
+	help:SetPoint("TOPRIGHT", -28, -1)
+	help:SetText("?")
+	help:SetFrameLevel(frame:GetFrameLevel() + 10)
+	help:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_BOTTOMLEFT")
+		GameTooltip:AddLine("Bokföring: commands")
+		for _, line in ipairs(ns.HELP) do GameTooltip:AddDoubleLine(line[1], line[2], 1, 0.82, 0, 1, 1, 1) end
+		GameTooltip:AddLine("Click to write them in chat.", 0.6, 0.6, 0.6)
+		GameTooltip:Show()
+	end)
+	help:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	help:SetScript("OnClick", function() SlashCmdList.BOKFORING("help") end)
+
 	frame.status = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 	frame.status:SetPoint("TOPRIGHT", -16, -40)
 	frame.status:SetJustifyH("RIGHT")
@@ -448,8 +465,13 @@ local function Build()
 
 	local function Learn(self)
 		if self == frame.canLearn then canLearn = self:GetChecked() and true or false else needSkill = self:GetChecked() and true or false end
-		-- Unlearned recipes are in All recipes; lowest skill first.
+		-- Unlearned recipes are in All recipes; lowest skill first; and a
+		-- missing auction price must not hide a recipe to learn (Zach 10/11).
 		if (canLearn or needSkill) and mode == "mine" then mode = "all" end
+		if canLearn or needSkill then
+			sellable = false
+			frame.sell:SetChecked(false)
+		end
 		if canLearn or needSkill then sortKey, sortUp = "skill", true end
 		offset = 0
 		ns.Refresh()
@@ -509,23 +531,36 @@ local function Build()
 		frame.tabs[k] = tab
 	end
 
-	-- Bokföring's own full scan, for listings and what sells (Zach 9/11).
+	-- Read recipes (Zach 10/11), in place of Scan AH: every recipe and
+	-- recipe item in the game, once, then greyed out. Market data comes
+	-- from Auctionator's own scans (/bok ah still scans with Bokföring).
 	local scan = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-	scan:SetSize(90, 22)
+	scan:SetSize(120, 22)
 	scan:SetPoint("BOTTOMRIGHT", -10, 5)
-	scan:SetText("Scan AH")
-	scan:SetScript("OnClick", ns.ScanAH)
+	scan:SetScript("OnClick", ns.ReadRecipes)
 	scan:SetScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_TOP")
-		GameTooltip:AddLine("Full auction house scan")
-		GameTooltip:AddLine("Counts listings, and compared with the last scan, what sold. Once every 15 minutes; the auction house must be open.", 1, 1, 1, true)
+		GameTooltip:AddLine("Read recipes")
+		GameTooltip:AddLine("Reads every recipe and recipe item in the game once, so All recipes, Can learn, Need skill and the Skill column work. A few minutes in the background; play on. Prices and what sells come from Auctionator's scans at the auction house.", 1, 1, 1, true)
 		GameTooltip:Show()
 	end)
 	scan:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	frame.scan = scan
-	-- How far a running scan is (Zach 9/11), on the button itself.
-	function ns.ScanProgress(percent)
-		scan:SetText(percent and string.format("Scan %d%%", percent) or "Scan AH")
+	-- How far the reading is, on the button itself.
+	function ns.ReadProgress(text)
+		if ns.RecipesState() ~= "done" then scan:SetText(text) end
+	end
+	function ns.ReadButton()
+		local state = ns.RecipesState()
+		if state == "done" then
+			scan:SetText("Recipes read")
+			scan:Disable()
+		elseif state == "todo" then
+			scan:SetText("Read recipes")
+			scan:Enable()
+		else
+			scan:Disable()
+		end
 	end
 
 	frame.note = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
@@ -794,6 +829,7 @@ end
 
 function ns.Refresh()
 	if not frame or not frame:IsShown() then return end
+	if ns.ReadButton then ns.ReadButton() end
 	local start = debugprofilestop()
 	Draw()
 	ns.refreshMs = debugprofilestop() - start
@@ -890,7 +926,10 @@ Draw = function()
 	local auctionator = Auctionator and Auctionator.API and Auctionator.API.v1
 	frame.status:SetText(auctionator and string.format("%d recipes", #list) or "|cffff4040Auctionator not found|r")
 	if canLearn or needSkill then
-		frame.note:SetText("Not learned on this character. Skill: what the recipe needs, ? until known (a trainer visit fills it in). Click a recipe for where to get it.")
+		-- Why the list may be short (Zach 10/11).
+		local why = not ns.db.catalogAt and "No recipe catalog yet: it is read once by itself a minute after login, or now with /bok scan. "
+			or (#list == 0 and sellable) and "Untick Sellable only to see recipes whose item has no auction house price. " or ""
+		frame.note:SetText(why .. "Not learned on this character. Skill: what the recipe needs, ? until known (a trainer visit fills it in). Click a recipe for where to get it.")
 		return
 	end
 	frame.note:SetText(#list == 0 and (mode == "all" and "No recipes: none of yours, and none shared by the guild through Skatteverket."

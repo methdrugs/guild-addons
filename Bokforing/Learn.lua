@@ -90,7 +90,9 @@ end
 -- client knows their class at once), then each one's name and tooltip as
 -- the game loads them.
 local walker
-function ns.ScanRecipeItems(quiet)
+local walkDone = {}
+function ns.ScanRecipeItems(quiet, done)
+	if done then table.insert(walkDone, done) end
 	if walker then
 		if not quiet then ns.Print("already reading recipe items.") end
 		return
@@ -113,6 +115,7 @@ function ns.ScanRecipeItems(quiet)
 				-- Subclass 0 is books, not recipes for a profession.
 				if class == RECIPE and subclass ~= 0 then table.insert(found, id) end
 			end
+			if ns.ReadProgress then ns.ReadProgress(string.format("Items %d%%", math.floor(id * 80 / ITEM_MAX))) end
 			if id >= ITEM_MAX then
 				waiting = found
 				if #found == 0 then
@@ -120,6 +123,9 @@ function ns.ScanRecipeItems(quiet)
 					self:SetScript("OnUpdate", nil)
 					walker = nil
 					if not quiet then ns.Print("no recipe items found on this client.") end
+					local callbacks = walkDone
+					walkDone = {}
+					for _, f in ipairs(callbacks) do f() end
 				end
 			end
 			return
@@ -145,7 +151,10 @@ function ns.ScanRecipeItems(quiet)
 			ns.db.recipeItems, ns.db.recipeItemsAt, ns.db.recipeItemsScan = read, time(), ITEM_SCAN
 			local n = 0
 			for _ in pairs(read) do n = n + 1 end
-			if not quiet then ns.Print(string.format("done: %d recipe items read.", n)) end
+			ns.Print(string.format("done: %d recipe items read.", n))
+			local callbacks = walkDone
+			walkDone = {}
+			for _, f in ipairs(callbacks) do f() end
 			ns.learnIndex = nil
 			if ns.RowsChanged then ns.RowsChanged() end
 			if ns.Refresh then ns.Refresh() end
@@ -397,6 +406,14 @@ end
 events:SetScript("OnEvent", function(_, event)
 	if not ns.db or (ns.Allowed and not ns.Allowed()) then return end
 	if event == "PLAYER_LOGIN" then
+		-- The recipe catalog, once, for members who never ran /bok scan
+		-- (Zach 10/11: a blacksmith saw nothing under All recipes, Need skill).
+		if not ns.db.catalogAt then
+			C_Timer.After(90, function()
+				if (ns.Allowed and not ns.Allowed()) or ns.db.catalogAt then return end
+				ns.Scan(nil, true)
+			end)
+		end
 		-- Once, a little after login, in the background.
 		if ns.db.recipeItemsScan ~= ITEM_SCAN then
 			C_Timer.After(30, function()
@@ -420,4 +437,30 @@ function ns.LearnTest()
 	return string.format("%d recipe items%s, %d trainer recipes, %d recipe items seen at vendors; this character: %s",
 		items, ns.db.recipeItemsAt and (" read " .. date("%d/%m %H:%M", ns.db.recipeItemsAt)) or " (not read yet)",
 		trainer, vendors, #skills > 0 and table.concat(skills, ", ") or "no professions found")
+end
+
+-- Read recipes (Zach 10/11): the button at the bottom of Bokföring does
+-- both reads once, the catalog and then the recipe items, and is greyed out
+-- when both are done. Prices come from Auctionator's scans.
+local reading = false
+function ns.ReadRecipes()
+	if reading then return end
+	reading = true
+	local function Finish()
+		reading = false
+		ns.RowsChanged()
+		if ns.Refresh then ns.Refresh() end
+	end
+	local function Items()
+		if ns.db.recipeItemsAt then Finish() else ns.ScanRecipeItems(true, Finish) end
+	end
+	if ns.db.catalogAt then Items() else ns.Scan(nil, true, Items) end
+	if ns.Refresh then ns.Refresh() end
+end
+
+-- "done", "reading" or "todo", for the button.
+function ns.RecipesState()
+	if ns.db.catalogAt and ns.db.recipeItemsAt then return "done" end
+	if reading then return "reading" end
+	return "todo"
 end

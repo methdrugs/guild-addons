@@ -11,9 +11,10 @@ local _, ns = ...
 ns.NOTES = {
 	{ "0.27", "2026-11-10", {
 		"Arbetsorder: klicka på en order för att öppna den. Där står vad som är beställt (klicka på föremålet för att se det, shift-klicka för att länka det), antal, när den beställdes, vems material, dricks, reagenser, hur länge beställaren kan vänta och kommentaren. En ny order accepteras eller avböjs inne i ordern, så att den blir läst först.",
-		"Skatteverket säger till i chatten när någon lämnar guildet, också om det hände medan du var offline. /skatt lämnat visar de senaste 30 dagarna.",
+		"Om någon lämnar guildet medan du är offline säger Skatteverket till när du loggar in. /skatt lämnat visar de senaste 30 dagarna.",
 		"Bokföring 0.6: fliken Today överst visar högst fem saker att göra just nu för att tjäna guld: vad som lönar sig att tillverka och hur många, vad du har i väskan att lägga upp, och efter en vecka med priser även fynd att köpa och sälja igen, och vilken tid på dygnet det brukar säljas dyrast. Allt inom en dagsbudget (/bok budget 50g, annars en fjärdedel av ditt guld).",
 		"Bokföring 0.6: kryssrutan Level up sorterar recepten efter vad varje skillpoäng kostar eller ger i guld, och visar hur många du ska tillverka tills receptet blir grönt. Tillsammans med Can learn syns även recept du kan köpa och lära dig.",
+		"Bokföring 0.6.1: knappen Read recipes längst ned (där Scan AH satt) läser in alla recept och receptföremål i spelet en gång, så att All recipes, Can learn och Need skill har något att visa; den blir grå när det är klart, och görs också av sig själv en minut efter inloggning. Priser och vad som säljer kommer från Auctionators skanningar.",
 		"Bokföring: vanliga reagenser från försäljare (tråd, färg, flaskor, flux med mera) hamnar på försäljarlistan, inte på Auctionator-listan.",
 	} },
 	{ "0.26", "2026-11-10", {
@@ -83,6 +84,47 @@ local GOLD, WHITE, RED, GREY = "|cffffd100", "|cffffffff", "|cffff4040", "|cff80
 
 local page
 
+-- Each version's lines grouped by panel (Zach 10/11: everything stood under
+-- Skatteverket though several lines were about Bokföring and the rest).
+-- A line that starts with a panel's name ("Bokföring 0.6: ...",
+-- "Arbetsorder: ...") goes under that panel, the version in its heading;
+-- other lines are Skatteverket's own.
+local PANELS = { "Skatteverket", "Yrken", "Arbetsorder", "Swedbank", "Bokföring" }
+local PANEL_COLOUR = "|cff80c0ff"
+
+local function Grouped(lines)
+	local groups, heads = {}, {}
+	for _, line in ipairs(lines) do
+		local panel, extra, rest
+		for _, p in ipairs(PANELS) do
+			if line:sub(1, #p) == p then
+				extra, rest = line:sub(#p + 1):match("^([^:]*):%s*(.+)$")
+				if rest then panel = p break end
+			end
+		end
+		if panel then
+			local version = extra:match("^%s*(%d[%d%.]*)%s*$")
+			-- The newest version named for the panel in this release.
+			local had = heads[panel] and heads[panel]:match("(%d[%d%.]*)$")
+			if version then
+				if not had or ns.VersionNumber(version) > ns.VersionNumber(had) then heads[panel] = panel .. " " .. version end
+			elseif extra:match("%S") then
+				rest = extra:match("^%s*(.-)%s*$") .. ": " .. rest
+			end
+		else
+			panel, rest = "Skatteverket", line
+		end
+		groups[panel] = groups[panel] or {}
+		-- "fliken Today ..." reads as the start of a sentence.
+		table.insert(groups[panel], (rest:gsub("^%l", string.upper)))
+	end
+	local out = {}
+	for _, p in ipairs(PANELS) do
+		if groups[p] then table.insert(out, { head = heads[p] or p, lines = groups[p] }) end
+	end
+	return out
+end
+
 local function Notes()
 	-- Both lists are newest first; merge by date, Skatteverket first on the same day.
 	local all = {}
@@ -97,7 +139,12 @@ local function Notes()
 	for _, e in ipairs(all) do
 		local v = e[2]
 		table.insert(out, string.format("%s%s %s|r  %s%s|r", GOLD, e[1], v[1], GREY, v[2]))
-		for _, line in ipairs(v[3]) do table.insert(out, WHITE .. "- " .. line .. "|r") end
+		local groups = e[1] == "Skatteverket" and Grouped(v[3]) or { { lines = v[3] } }
+		for _, g in ipairs(groups) do
+			-- A heading only when the version touches more than its own panel.
+			if g.head and (#groups > 1 or g.head ~= "Skatteverket") then table.insert(out, PANEL_COLOUR .. "  " .. g.head .. "|r") end
+			for _, line in ipairs(g.lines) do table.insert(out, WHITE .. (g.head and "    - " or "- ") .. line .. "|r") end
+		end
 		table.insert(out, " ")
 	end
 	return table.concat(out, "\n")

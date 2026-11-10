@@ -270,7 +270,7 @@ function ns.RefreshToday(frame)
 	local days = Learning()
 	view.learning:SetText(days < FLIP_DAYS and string.format("Learning the prices: %d of %d days. Flips and the best hour to post come once a week of scans is in; scan at different times of day.", days, FLIP_DAYS) or "")
 	view.empty:SetShown(#actions == 0)
-	view.empty:SetText("Nothing worth doing right now: scan the auction house (Scan AH) twice a few hours apart, and open your profession windows once.")
+	view.empty:SetText("Nothing worth doing right now: scan the auction house with Auctionator twice a few hours apart, and open your profession windows once.")
 	frame.status:SetText(used > 0 and ("uses " .. ns.Money(used)) or "")
 	frame.note:SetText("Best first: crafts that sell, what you already have, and items to buy cheap and sell again. Click an action for its shopping list.")
 end
