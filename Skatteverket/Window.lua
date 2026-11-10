@@ -584,12 +584,21 @@ local function RefreshTax()
 	if #sorted == 0 then
 		frame.count:SetText("Inga rapporter än. Tryck Uppdatera eller vänta tills medlemmar loggar in.")
 	else
-		frame.count:SetText(string.format("Visar %d-%d av %d (scrolla med mushjulet). God: inget obetalt över 48 timmar. Neutral: upp till en vecka. Negativ: en vecka eller mer. Skatteverkets favorit: längst obruten tid i god ställning.",
+		frame.count:SetText(string.format("Visar %d-%d av %d (scrolla med mushjulet). God: inget obetalt över 8 timmars speltid. Neutral: upp till 12 timmar. Negativ: 12 timmar eller mer. Bara speltid räknas, alla dina karaktärer tillsammans. Skatteverkets favorit: längst obruten speltid i god ställning.",
 			offset + 1, math.min(offset + ROWS, #sorted), #sorted))
 	end
 
 	if leaderMode then
-		frame.lead.selected:SetText(selected and ("Vald: " .. selected) or "Klicka på en medlem")
+		-- The leader sees who shares an account (Zach 10/11); nobody else does.
+		local same = {}
+		local acct = selected and db.members[selected] and db.members[selected].account
+		if acct then
+			for name, m in pairs(db.members) do
+				if name ~= selected and m.account == acct then table.insert(same, name) end
+			end
+			table.sort(same)
+		end
+		frame.lead.selected:SetText(selected and ("Vald: " .. selected .. (#same > 0 and (" (samma konto: " .. table.concat(same, ", ") .. ")") or "")) or "Klicka på en medlem")
 		local missing = {}
 		for i = 1, GetNumGuildMembers() do
 			local name = ns.Short(GetGuildRosterInfo(i))

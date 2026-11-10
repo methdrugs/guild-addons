@@ -349,7 +349,7 @@ local FAQ = {
 local function SetFaqTexts()
 	local rate = string.format("%g %%", ns.db.rate * 100)
 	faqTexts.pay:SetText("Skatten, i dag " .. rate .. ", dras på guld du lootar och säljer till handlare eller på auktionshuset. Questbelöningar, post och byten beskattas aldrig. När du öppnar guildbanken betalas skatten av sig själv om du har hela beloppet på dig; annars trycker du Betala nu i /skatt.")
-	faqTexts.standing:SetText("God: inget obetalt i mer än 48 timmar. Neutral: obetalt upp till en vecka. Negativ: obetalt i en vecka eller mer. Skatteverkets favorit #1-3 går till de längsta obrutna perioderna i god ställning. Guildet ser din ställning, beloppen ser bara guildledaren.")
+	faqTexts.standing:SetText("Ställningen räknas i speltid, inte i dagar: obetald skatt åldras bara medan du är inloggad. God: inget obetalt i mer än 8 timmars speltid. Neutral: obetalt i 8 till 12 timmars speltid. Negativ: obetalt i mer än 12 timmars speltid. Alla dina karaktärer på samma konto räknas tillsammans, och den bästa ställningen gäller för alla, så en alt drar aldrig ned din main. Håll muspekaren över blixten för att se hur mycket speltid som är kvar. Skatteverkets favorit #1-3 går till de längsta obrutna perioderna i god ställning, i speltid. Guildet ser din ställning, beloppen ser bara guildledaren.")
 	local lines = {}
 	for _, line in ipairs(ns.HELP or {}) do
 		if not line.leader then table.insert(lines, line[1] .. " - " .. line[2]) end

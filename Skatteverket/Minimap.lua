@@ -130,6 +130,17 @@ local function Tooltip(self)
 		end
 		-- Taxed whether approved or not, so always shown (Zach 8/11).
 		GameTooltip:AddLine("Skatt att betala: " .. ns.Money(math.max(ns.char.owed, 0)), 1, 1, 1)
+		-- How much play time is left before the standing drops (Zach 10/11).
+		local debt, _, standing = ns.AccountState()
+		local function Hours(s)
+			s = math.max(0, math.floor(s / 60))
+			return s >= 60 and string.format("%d h %d min", math.floor(s / 60), s % 60) or string.format("%d min", s)
+		end
+		if debt > 0 and standing == "good" then
+			GameTooltip:AddLine("Speltid kvar till Neutral: " .. Hours(ns.GOOD_PLAY - debt), 1, 0.82, 0)
+		elseif debt > 0 and standing == "neutral" then
+			GameTooltip:AddLine("Speltid kvar till Negativ: " .. Hours(ns.NEGATIVE_PLAY - debt), 1, 0.4, 0.4)
+		end
 	end
 	local todo = ns.Todo()
 	if #todo > 0 then

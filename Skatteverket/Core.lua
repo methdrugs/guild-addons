@@ -7,7 +7,10 @@
 -- guild leader's side is in Leader.lua and the /skatt window in Window.lua.
 --
 -- Guild channel, no amounts:
---   T;version;last deposit;debt since;good since;has paid;Swedbank version;Bokföring version;last restart
+--   T;version;last deposit;debt since;good since;has paid;Swedbank version;Bokföring version;last restart;debt age;good age
+--        debt age, good age (0.28): seconds of play time, the account's best;
+--        debt since and good since are then made-up dates that give clients
+--        from before 0.28 the same standing
 --        last restart (0.27.1): the newest version whose update needs a game
 --        restart, so an older client can say restart or /reload
 --                                                           a member's standing; "-" when
@@ -35,11 +38,16 @@
 local _, ns = ...
 
 ns.GUILD = "THÖNDERSTÖRM"
-ns.VERSION = "0.27.1"
-ns.SCHEMA = 9
+ns.VERSION = "0.28"
+ns.SCHEMA = 10
 ns.PREFIX = "SKATT"
 ns.GOOD_HOURS = 48
 ns.NEGATIVE_DAYS = 7
+-- Standing by play time (Zach 10/11, 0.28): unpaid tax only ages while the
+-- account is logged in, AFK included; God up to 8 hours of play, Neutral
+-- up to 12, then Negativ. Clients from before 0.28 still use the days above.
+ns.GOOD_PLAY = 8 * 3600
+ns.NEGATIVE_PLAY = 12 * 3600
 
 local char, db
 local lastMoney
@@ -195,8 +203,55 @@ end
 
 -- Standing from how long a debt has stood unpaid: no debt, or a debt
 -- younger than 48 hours, is good; up to a week neutral; then negative.
+-- That is how clients before 0.28 judge; from 0.28 by play time above.
 -- debtSince is set only while at least 1 copper is owed.
+-- A debt's age in play time, as a standing.
+function ns.PlayStanding(age)
+	if not age or age <= ns.GOOD_PLAY then return "good" end
+	if age < ns.NEGATIVE_PLAY then return "neutral" end
+	return "negative"
+end
+
+-- Play time on this WoW account, every character together (0.28): seconds
+-- logged in, kept for the account.
+function ns.Clock()
+	return db and db.clock or 0
+end
+
+-- The account's standing (Zach 10/11): characters on one account are one
+-- person, and the best of them counts for all, so an alt never pulls its
+-- main down. Only characters that have paid tax at least once count as
+-- the best, so a bank alt that never earns cannot carry the account; with
+-- none such, all of them. Returns the youngest debt age (0 for none), the
+-- longest God run, and the standing.
+function ns.AccountState()
+	local now = ns.Clock()
+	local function Best(paidOnly)
+		local debt, good
+		for _, c in pairs(db.chars or {}) do
+			if not paidOnly or (c.paid or 0) > 0 then
+				local age = (c.owed or 0) >= 1 and c.debtAt and math.max(0, now - c.debtAt) or 0
+				if not debt or age < debt then debt = age end
+				if ns.PlayStanding(age) == "good" and c.goodAt then good = math.max(good or 0, now - c.goodAt) end
+			end
+		end
+		return debt, good
+	end
+	local debt, good = Best(true)
+	if not debt then debt, good = Best(false) end
+	debt, good = debt or 0, good or 0
+	return debt, good, ns.PlayStanding(debt)
+end
+
 function ns.Standing(m)
+	-- This character: the account's standing in play time.
+	if m == char then
+		local _, _, standing = ns.AccountState()
+		return standing
+	end
+	-- Reported in play time (0.28 and later): as it was then, frozen while
+	-- they are offline.
+	if m.debtAge ~= nil then return ns.PlayStanding(m.debtAge) end
 	if not m.debtSince then return "good" end
 	local age = time() - m.debtSince
 	if age <= ns.GOOD_HOURS * 3600 then return "good" end
@@ -221,6 +276,10 @@ function ns.TopPayers()
 		end
 	end
 	table.sort(list, function(a, b)
+		-- The longest run first: play time where reported (0.28), else days.
+		local function Run(m) return m.goodAge or (time() - m.goodSince) end
+		local ra, rb = Run(db.members[a]), Run(db.members[b])
+		if ra ~= rb then return ra > rb end
 		local ga, gb = db.members[a].goodSince, db.members[b].goodSince
 		if ga ~= gb then return ga < gb end
 		return a < b
@@ -279,6 +338,11 @@ function ns.UpdateSelf()
 	m.lastDeposit, m.incomeSince, m.debtSince, m.lastSeen = char.lastDeposit or 0, char.incomeSince, char.debtSince, time()
 	m.goodSince, m.hasPaid = char.goodSince, char.paid > 0
 	m.swed, m.bok = ns.SwedbankVersion(), ns.BokforingVersion()
+	-- This character in the account's list, and the account's standing on
+	-- its own row (0.28).
+	db.chars = db.chars or {}
+	db.chars[me] = { owed = char.owed, debtAt = char.debtAt, goodAt = char.goodAt, paid = char.paid, at = time() }
+	m.debtAge, m.goodAge = ns.AccountState()
 	ns.Changed()
 end
 
@@ -299,23 +363,45 @@ function ns.BokforingVersion()
 	return "-"
 end
 
+-- Dates for clients from before 0.28, which judge standing by days since:
+-- a debt age in play time becomes a date that gives the same standing
+-- (8 hours of play = 48 hours, 12 = a week); 0 for no debt.
+local function OldDates(debtAge, goodAge)
+	local now, debt = time(), 0
+	if debtAge and debtAge > 0 then
+		local h = 3600
+		local real
+		if debtAge <= ns.GOOD_PLAY then real = debtAge * 6
+		elseif debtAge < ns.NEGATIVE_PLAY then real = 48 * h + (debtAge - ns.GOOD_PLAY) * 30
+		else real = 168 * h + (debtAge - ns.NEGATIVE_PLAY) end
+		debt = now - math.floor(real)
+	end
+	return debt, now - math.floor(goodAge or 0)
+end
+
 -- The amounts, to the leader only. If the leader is offline they wait,
 -- and go out when the roster shows the leader online.
 local function SendPrivate()
 	local leader = ns.Leader()
 	privateDirty = true
 	if not leader then return end
-	local msg = string.format("P;%s;%d;%d;%d;%d;%d;%d;%d;%d", ns.VERSION,
+	local debtAge, goodAge = ns.AccountState()
+	local debtDate, goodDate = OldDates(debtAge, goodAge)
+	local msg = string.format("P;%s;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s", ns.VERSION,
 		math.floor(char.incomeTotal), math.floor(char.paid), math.floor(char.owed),
-		char.lastDeposit or 0, math.floor(char.incomeSince), db.rateStamp, char.debtSince or 0, char.goodSince or 0)
+		char.lastDeposit or 0, math.floor(char.incomeSince), db.rateStamp, debtDate, goodDate,
+		math.floor(debtAge), math.floor(goodAge), db.account)
 	if ns.SendTo(leader, msg) then privateDirty = false end
 end
 
 local function SendStatus()
 	if not char or not ns.InOurGuild() then return end
 	dirty = false
-	ns.Send(string.format("T;%s;%d;%d;%d;%d;%s;%s;%s", ns.VERSION, char.lastDeposit or 0, char.debtSince or 0,
-		char.goodSince or 0, char.paid > 0 and 1 or 0, ns.SwedbankVersion(), ns.BokforingVersion(), ns.LastRestart()))
+	local debtAge, goodAge = ns.AccountState()
+	local debtDate, goodDate = OldDates(debtAge, goodAge)
+	ns.Send(string.format("T;%s;%d;%d;%d;%d;%s;%s;%s;%d;%d", ns.VERSION, char.lastDeposit or 0, debtDate,
+		goodDate, char.paid > 0 and 1 or 0, ns.SwedbankVersion(), ns.BokforingVersion(), ns.LastRestart(),
+		math.floor(debtAge), math.floor(goodAge)))
 	SendPrivate()
 end
 ns.SendStatus = SendStatus
@@ -338,8 +424,8 @@ local function Reconcile()
 	local target = math.max(char.owed, 0)
 	local now = time()
 	if target < 1 then
-		char.debts = target > 0 and { { t = now, amount = target } } or {}
-		char.debtSince = nil
+		char.debts = target > 0 and { { t = now, c = ns.Clock(), amount = target } } or {}
+		char.debtSince, char.debtAt = nil, nil
 		return
 	end
 	local total = 0
@@ -349,7 +435,7 @@ local function Reconcile()
 		if last and now - last.t < 3600 then
 			last.amount = last.amount + (target - total)
 		else
-			table.insert(char.debts, { t = now, amount = target - total })
+			table.insert(char.debts, { t = now, c = ns.Clock(), amount = target - total })
 		end
 	else
 		local cut = total - target
@@ -365,6 +451,7 @@ local function Reconcile()
 		end
 	end
 	char.debtSince = char.debts[1] and char.debts[1].t or now
+	char.debtAt = char.debts[1] and char.debts[1].c or ns.Clock()
 end
 
 -- Where income came from, per day: l loot, v vendor, a auction house.
@@ -466,7 +553,7 @@ local function ConfirmDeposit()
 	char.incomeSince = 0
 	char.lastDeposit = time()
 	Reconcile()
-	if not wasGood then char.goodSince = time() end
+	if not wasGood then char.goodSince, char.goodAt = time(), ns.Clock() end
 	Print(string.format("betalade %s till %s.", ns.Money(amount), ns.GUILD))
 	if char.owed >= 1 then Print("kvar att betala: " .. ns.Money(char.owed)) end
 	ns.UpdateSelf()
@@ -606,9 +693,9 @@ local function Remind()
 	lastStanding = standing
 	local text
 	if standing == "negative" then
-		text = "|cffff4040din skatt på " .. ns.Money(char.owed) .. " har varit obetald i över en vecka. Du har negativ ställning; besök guildbanken.|r"
+		text = "|cffff4040din skatt på " .. ns.Money(char.owed) .. " har varit obetald i över 12 timmars speltid. Du har negativ ställning; besök guildbanken.|r"
 	elseif standing == "neutral" then
-		text = "din skatt på " .. ns.Money(char.owed) .. " har varit obetald i över 48 timmar. Besök guildbanken för att få tillbaka god ställning."
+		text = "din skatt på " .. ns.Money(char.owed) .. " har varit obetald i över 8 timmars speltid. Besök guildbanken för att få tillbaka god ställning."
 	elseif not char.lastDeposit and char.owed >= 1 then
 		Print("du har inte betalat någon skatt än; du är skyldig " .. ns.Money(char.owed) .. ". Besök guildbanken.")
 		return
@@ -702,6 +789,8 @@ local function OnPublic(sender, parts)
 	m.debtSince = debt > 0 and debt or nil
 	m.goodSince = good > 0 and good or nil
 	m.hasPaid = parts[6] == "1"
+	-- Play time (0.28): nil from older clients, which keeps their dates.
+	m.debtAge, m.goodAge = tonumber(parts[10]), tonumber(parts[11])
 	-- 0.21 and older send no Swedbank version; unknown until they update.
 	m.swed = parts[7]
 	-- 0.25 and older send no Bokföring version.
@@ -714,7 +803,7 @@ end
 local function OnBoard(parts)
 	local me = ns.Me()
 	for i = 2, #parts do
-		local name, lastDeposit, debtSince, lastSeen, goodSince, hasPaid, version, swed, bok = strsplit(",", parts[i])
+		local name, lastDeposit, debtSince, lastSeen, goodSince, hasPaid, version, swed, bok, debtAge, goodAge = strsplit(",", parts[i])
 		CheckVersion(version, swed, bok)
 		lastSeen = tonumber(lastSeen)
 		if name and lastSeen and name ~= me then
@@ -730,6 +819,7 @@ local function OnBoard(parts)
 				if version and version ~= "" then m.version = version end
 				if swed and swed ~= "" then m.swed = swed end
 				if bok and bok ~= "" then m.bok = bok end
+				m.debtAge, m.goodAge = tonumber(debtAge), tonumber(goodAge)
 			end
 		end
 	end
@@ -759,7 +849,7 @@ function ns.ApplyAdjustment(id, op, amount)
 			Print("guildledaren gav dig " .. ns.Money(amount) .. " i skattekredit.")
 		end
 		Reconcile()
-		if not wasGood and ns.Standing(char) == "good" then char.goodSince = time() end
+		if not wasGood and ns.Standing(char) == "good" then char.goodSince, char.goodAt = time(), ns.Clock() end
 		ns.UpdateSelf()
 	end
 	local leader = ns.Leader()
@@ -885,6 +975,14 @@ local function Migrate()
 		-- before has no source and stays apart (Zach 8/11).
 		char.ledgerBefore = char.incomeTotal
 	end
+	if (char.schema or 1) < 10 then
+		-- 0.28 judges standing by play time; every clock starts now, so the
+		-- switch makes nobody Neutral or Negativ (Zach 10/11).
+		db.clock = db.clock or 0
+		for _, d in ipairs(char.debts or {}) do d.c = db.clock end
+		char.debtAt = char.owed >= 1 and db.clock or nil
+		char.goodAt = db.clock
+	end
 	-- 0.23 keeps this character's achievements in char.ach (id -> time
 	-- earned, made in Init) and others' in db.members[name].ach; nothing
 	-- older changes. Those already earned are found at the next login.
@@ -902,6 +1000,10 @@ local function Init()
 	db.members = db.members or {}
 	db.pending = db.pending or {}
 	db.recipes = db.recipes or {}
+	db.clock = db.clock or 0
+	db.chars = db.chars or {}
+	-- Which members share an account, for the leader only (Zach 10/11).
+	db.account = db.account or string.format("%x%04x", time(), math.random(0, 65535))
 	SkatteverketCharDB = SkatteverketCharDB or {}
 	char = SkatteverketCharDB
 	char.incomeTotal = char.incomeTotal or 0
@@ -938,6 +1040,15 @@ events:SetScript("OnEvent", function(_, event, ...)
 		return
 	elseif event == "PLAYER_LOGIN" then
 		lastMoney = GetMoney()
+		-- The play clock (0.28): every second logged in, AFK too, for the
+		-- whole account; a long gap (a loading screen) counts at most a minute.
+		local lastTick = GetTime()
+		C_Timer.NewTicker(10, function()
+			local now = GetTime()
+			db.clock = (db.clock or 0) + math.min(now - lastTick, 60)
+			lastTick = now
+		end)
+		C_Timer.NewTicker(60, function() if ns.InOurGuild() then ns.UpdateSelf() end end)
 		local register = C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix or RegisterAddonMessagePrefix
 		if register then register(ns.PREFIX) end
 		ns.RequestRoster()
@@ -962,6 +1073,8 @@ events:SetScript("OnEvent", function(_, event, ...)
 			-- Remind again whenever the standing drops a step.
 			local standing = ns.InOurGuild() and ns.Standing(char)
 			if standing and standing ~= lastStanding and standing ~= "good" then Remind() end
+			-- Standing moves with play time now: tell the guild when it does.
+			if standing and lastStanding and standing ~= lastStanding then SendStatus() end
 			lastStanding = standing
 		end)
 	elseif event == "GUILD_ROSTER_UPDATE" then

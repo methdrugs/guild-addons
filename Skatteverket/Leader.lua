@@ -39,6 +39,9 @@ function ns.OnPrivate(sender, parts)
 		local debt, good = tonumber(parts[9]) or 0, tonumber(parts[10]) or 0
 		m.debtSince = debt > 0 and debt or nil
 		m.goodSince = good > 0 and good or nil
+		-- Play time and the account (0.28), for standing and the alt link.
+		m.debtAge, m.goodAge = tonumber(parts[11]), tonumber(parts[12])
+		if parts[13] and parts[13] ~= "" then m.account = parts[13] end
 		m.hasPaid = paid > 0
 	end
 	m.lastSeen = time()
@@ -70,8 +73,9 @@ function ns.ServeBoard()
 	for name, m in pairs(ns.db.members) do
 		-- Only people in the guild now.
 		if not roster or roster[name] then
-			local row = string.format("%s,%d,%d,%d,%d,%d,%s,%s,%s", name, m.lastDeposit or 0, m.debtSince or 0,
-				m.lastSeen or 0, m.goodSince or 0, m.hasPaid and 1 or 0, m.version or "", m.swed or "", m.bok or "")
+			local row = string.format("%s,%d,%d,%d,%d,%d,%s,%s,%s,%s,%s", name, m.lastDeposit or 0, m.debtSince or 0,
+				m.lastSeen or 0, m.goodSince or 0, m.hasPaid and 1 or 0, m.version or "", m.swed or "", m.bok or "",
+				m.debtAge and math.floor(m.debtAge) or "", m.goodAge and math.floor(m.goodAge) or "")
 			if length + #row + 1 > 250 then
 				table.insert(chunks, "E;" .. table.concat(chunk, ";"))
 				chunk, length = {}, 2
@@ -132,7 +136,10 @@ function ns.Adjust(name, op, amount)
 	if m and m.owed then
 		if op == "F" and m.owed > 0 then m.owed = 0 end
 		if op == "C" then m.owed = m.owed - adj.amount end
-		if m.owed < 1 then m.debtSince = nil end
+		if m.owed < 1 then
+			m.debtSince = nil
+			if m.debtAge then m.debtAge = 0 end
+		end
 	end
 	ns.Print(string.format("%s för %s skickad; gäller när de är online.",
 		op == "F" and "Efterskänkning" or "Kredit på " .. ns.Money(adj.amount), name))

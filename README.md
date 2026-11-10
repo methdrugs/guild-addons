@@ -14,7 +14,7 @@ Skatteverket och Swedbank fungerar bara för medlemmar i THÖNDERSTÖRM; för al
 2. Klicka på **Get Addons** och sedan **Install from URL**.
 3. Klistra in `https://github.com/methdrugs/guild-addons` och klicka **Import**, sedan **Install**.
 4. För Bokföring: sök på **Auctionator** under Get Addons och installera det också.
-5. Klart. WowUp uppdaterar addonsen själv när en ny version kommer.
+5. Klart. WowUp uppdaterar addonsen själv när en ny version kommer. Efter en uppdatering visar spelet i rött om du ska skriva `/reload` eller starta om spelet.
 
 ## Installera för hand
 
