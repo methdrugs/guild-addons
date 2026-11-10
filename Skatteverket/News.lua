@@ -8,16 +8,24 @@
 local _, ns = ...
 
 -- Newest first. Written for members: no amounts, nothing leader-only.
+-- after (Zach 10/11, every release from 0.26 on): "reload" when /reload is
+-- enough, "restart" when the release adds files the game only reads at
+-- start; shown in red under the version.
 ns.NOTES = {
-	{ "0.27", "2026-11-10", {
+	{ "0.27.1", "2026-11-10", after = "reload", {
+		"Ett ? uppe till höger i varje fönster visar alla kommandon; klicka för att få dem i chatten.",
+		"Rutan om en ny version säger nu att /reload räcker efter uppdateringen i WowUp.",
+		"Bokföring 0.6.1: knappen Read recipes längst ned (där Scan AH satt) läser in alla recept och receptföremål i spelet en gång, så att All recipes, Can learn och Need skill har något att visa; den blir grå när det är klart, och görs också av sig själv en minut efter inloggning. Priser och vad som säljer kommer från Auctionators skanningar.",
+		"Bokföring: ett ? uppe till höger visar Bokförings kommandon.",
+	} },
+	{ "0.27", "2026-11-10", after = "restart", {
 		"Arbetsorder: klicka på en order för att öppna den. Där står vad som är beställt (klicka på föremålet för att se det, shift-klicka för att länka det), antal, när den beställdes, vems material, dricks, reagenser, hur länge beställaren kan vänta och kommentaren. En ny order accepteras eller avböjs inne i ordern, så att den blir läst först.",
 		"Om någon lämnar guildet medan du är offline säger Skatteverket till när du loggar in. /skatt lämnat visar de senaste 30 dagarna.",
 		"Bokföring 0.6: fliken Today överst visar högst fem saker att göra just nu för att tjäna guld: vad som lönar sig att tillverka och hur många, vad du har i väskan att lägga upp, och efter en vecka med priser även fynd att köpa och sälja igen, och vilken tid på dygnet det brukar säljas dyrast. Allt inom en dagsbudget (/bok budget 50g, annars en fjärdedel av ditt guld).",
 		"Bokföring 0.6: kryssrutan Level up sorterar recepten efter vad varje skillpoäng kostar eller ger i guld, och visar hur många du ska tillverka tills receptet blir grönt. Tillsammans med Can learn syns även recept du kan köpa och lära dig.",
-		"Bokföring 0.6.1: knappen Read recipes längst ned (där Scan AH satt) läser in alla recept och receptföremål i spelet en gång, så att All recipes, Can learn och Need skill har något att visa; den blir grå när det är klart, och görs också av sig själv en minut efter inloggning. Priser och vad som säljer kommer från Auctionators skanningar.",
 		"Bokföring: vanliga reagenser från försäljare (tråd, färg, flaskor, flux med mera) hamnar på försäljarlistan, inte på Auctionator-listan.",
 	} },
-	{ "0.26", "2026-11-10", {
+	{ "0.26", "2026-11-10", after = "restart", {
 		"Ny version: kommer det en nyare Skatteverket, Swedbank eller Bokföring visas en ruta när du loggar in, med vad som är nytt att hämta. Uppdatera i WowUp.",
 		"Nytt visar också vem som kör vilken version av Bokföring.",
 		"Bokföring 0.4: fliken Market visar priset över tid för det du har tillverkat, med låg och hög per dag de senaste 30 dagarna och vilka veckodagar som brukar ligga högt eller lågt.",
@@ -139,6 +147,12 @@ local function Notes()
 	for _, e in ipairs(all) do
 		local v = e[2]
 		table.insert(out, string.format("%s%s %s|r  %s%s|r", GOLD, e[1], v[1], GREY, v[2]))
+		-- What to do after updating, in red (Zach 10/11).
+		if v.after == "restart" then
+			table.insert(out, RED .. "  EFTER UPPDATERINGEN: STARTA OM SPELET HELT (/reload räcker inte den här gången)|r")
+		elseif v.after == "reload" then
+			table.insert(out, RED .. "  EFTER UPPDATERINGEN: SKRIV /reload|r")
+		end
 		local groups = e[1] == "Skatteverket" and Grouped(v[3]) or { { lines = v[3] } }
 		for _, g in ipairs(groups) do
 			-- A heading only when the version touches more than its own panel.

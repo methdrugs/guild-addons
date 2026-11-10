@@ -7,7 +7,9 @@
 -- guild leader's side is in Leader.lua and the /skatt window in Window.lua.
 --
 -- Guild channel, no amounts:
---   T;version;last deposit;debt since;good since;has paid;Swedbank version;Bokföring version
+--   T;version;last deposit;debt since;good since;has paid;Swedbank version;Bokföring version;last restart
+--        last restart (0.27.1): the newest version whose update needs a game
+--        restart, so an older client can say restart or /reload
 --                                                           a member's standing; "-" when
 --                                                           Swedbank is not running (0.22)
 --   B                                                       ask the leader for the standings
@@ -33,7 +35,7 @@
 local _, ns = ...
 
 ns.GUILD = "THÖNDERSTÖRM"
-ns.VERSION = "0.27"
+ns.VERSION = "0.27.1"
 ns.SCHEMA = 9
 ns.PREFIX = "SKATT"
 ns.GOOD_HOURS = 48
@@ -312,8 +314,8 @@ end
 local function SendStatus()
 	if not char or not ns.InOurGuild() then return end
 	dirty = false
-	ns.Send(string.format("T;%s;%d;%d;%d;%d;%s;%s", ns.VERSION, char.lastDeposit or 0, char.debtSince or 0,
-		char.goodSince or 0, char.paid > 0 and 1 or 0, ns.SwedbankVersion(), ns.BokforingVersion()))
+	ns.Send(string.format("T;%s;%d;%d;%d;%d;%s;%s;%s", ns.VERSION, char.lastDeposit or 0, char.debtSince or 0,
+		char.goodSince or 0, char.paid > 0 and 1 or 0, ns.SwedbankVersion(), ns.BokforingVersion(), ns.LastRestart()))
 	SendPrivate()
 end
 ns.SendStatus = SendStatus
@@ -631,6 +633,17 @@ ns.VersionNumber = VersionNumber
 -- one popup a session naming each, out of combat. An addon not running
 -- here is never asked for.
 local newer, updateShown = {}, false
+-- The newest release that needs a restart, as newer clients report it.
+local restartSince
+
+-- The newest version in Nytt marked after = "restart" (News.lua).
+function ns.LastRestart()
+	local best = "0.0"
+	for _, v in ipairs(ns.NOTES or {}) do
+		if v.after == "restart" and VersionNumber(v[1]) > VersionNumber(best) then best = v[1] end
+	end
+	return best
+end
 
 StaticPopupDialogs.SKATTEVERKET_UPDATE = {
 	text = "%s",
@@ -651,8 +664,17 @@ local function ShowUpdate()
 	for _, name in ipairs({ "Skatteverket", "Swedbank", "Bokföring" }) do
 		if newer[name] then table.insert(lines, name .. " " .. newer[name]) end
 	end
-	StaticPopup_Show("SKATTEVERKET_UPDATE", "Ny version finns:\n\n" .. table.concat(lines, "\n")
-		.. "\n\nUppdatera guild-addons i WowUp och starta om spelet. Din historik följer med.")
+	-- Restart or /reload (Zach 10/11): a restart when any release since this
+	-- one needs it, from what newer clients report; in red.
+	local after
+	if restartSince and VersionNumber(restartSince) > VersionNumber(ns.VERSION) then
+		after = "|cffff4040Uppdatera guild-addons i WowUp och STARTA OM SPELET HELT.\n/reload räcker inte den här gången.|r"
+	elseif restartSince then
+		after = "|cffff4040Uppdatera guild-addons i WowUp och skriv /reload.|r"
+	else
+		after = "|cffff4040Uppdatera guild-addons i WowUp och skriv /reload.|r\n(Ser något fönster tomt ut efteråt: starta om spelet en gång.)"
+	end
+	StaticPopup_Show("SKATTEVERKET_UPDATE", "Ny version finns:\n\n" .. table.concat(lines, "\n") .. "\n\n" .. after .. "\n\nDin historik följer med.")
 end
 
 local function Newer(name, seen, own)
@@ -660,7 +682,8 @@ local function Newer(name, seen, own)
 	if VersionNumber(seen) > VersionNumber(newer[name]) then newer[name] = seen end
 end
 
-local function CheckVersion(skatt, swed, bok)
+local function CheckVersion(skatt, swed, bok, restart)
+	if restart and restart ~= "" and VersionNumber(restart) > VersionNumber(restartSince) then restartSince = restart end
 	Newer("Skatteverket", skatt, ns.VERSION)
 	Newer("Swedbank", swed, ns.SwedbankVersion())
 	Newer("Bokföring", bok, ns.BokforingVersion())
@@ -669,7 +692,7 @@ end
 
 
 local function OnPublic(sender, parts)
-	CheckVersion(parts[2], parts[7], parts[8])
+	CheckVersion(parts[2], parts[7], parts[8], parts[9])
 	if sender == ns.Me() then return end
 	local m = db.members[sender] or { firstSeen = time() }
 	db.members[sender] = m

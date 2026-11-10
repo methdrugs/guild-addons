@@ -298,6 +298,48 @@ local function BuildTax()
 
 end
 
+-- Every command (Zach 10/11), for the ? on each window and the help page;
+-- leader = true only for the guild leader.
+ns.HELP = {
+	{ "/skatt", "din skatt och allas ställning" },
+	{ "/skatt betala", "betala vid guildbanken" },
+	{ "/skatt info", "din skatt i chatten" },
+	{ "/skatt anmälan", "din anmälan" },
+	{ "/yrken", "Yrken och Arbetsorder" },
+	{ "/swedbank", "låna guld av guildet" },
+	{ "/bok", "Bokföring, om du har den" },
+	{ "/skatt nytt", "vad som är nytt, och vem som kör vilken version" },
+	{ "/skatt lämnat", "vem som har lämnat guildet de senaste 30 dagarna" },
+	{ "/skatt hjälp", "villkor och vanliga frågor" },
+	{ "/skatt sats 5", "sätt skattesatsen", leader = true },
+	{ "/swedbank kvitt", "nollställ guildbankens utlägg efter en flytt för hand", leader = true },
+	{ "/skatt ikontest", "visa blixtens fyra lägen", leader = true },
+}
+
+local function HelpButton(f)
+	local help = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+	help:SetSize(22, 20)
+	help:SetPoint("TOPRIGHT", -28, -1)
+	help:SetText("?")
+	help:SetFrameLevel(f:GetFrameLevel() + 10)
+	help:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_BOTTOMLEFT")
+		GameTooltip:AddLine("THÖNDERSTÖRM: kommandon")
+		for _, line in ipairs(ns.HELP) do
+			if not line.leader or IsGuildLeader() then GameTooltip:AddDoubleLine(line[1], line[2], 1, 0.82, 0, 1, 1, 1) end
+		end
+		GameTooltip:AddLine("Klicka för att skriva dem i chatten.", 0.6, 0.6, 0.6)
+		GameTooltip:Show()
+	end)
+	help:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	help:SetScript("OnClick", function()
+		ns.Print("kommandon:")
+		for _, line in ipairs(ns.HELP) do
+			if not line.leader or IsGuildLeader() then ns.Print("  " .. line[1] .. ": " .. line[2]) end
+		end
+	end)
+end
+
 local function Build(id)
 	local def = WINDOWS[id]
 	local f, classic = Panel(def.name, def.title, def.art)
@@ -319,6 +361,7 @@ local function Build(id)
 	end)
 	tinsert(UISpecialFrames, def.name)
 	Place(id, f)
+	HelpButton(f)
 	if def.bank then
 		-- Beside the portrait, above the inset: the guild bank's last known balance.
 		f.bank = Text(f, "GameFontHighlightSmall", "TOPLEFT", classic and 66 or 24, -34)
