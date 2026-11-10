@@ -57,6 +57,58 @@ function ns.RefreshMinimap()
 	end
 end
 
+-- What waits for him (Zach 10/11: something on the bolt that draws his
+-- attention after being away): for the leader loan applications, late
+-- loans and members to make Medborgare; for everyone work orders. A yellow
+-- ! pulses on the bolt while anything waits, the tooltip lists it, and the
+-- right-click menu has each as a button. It stays until it is dealt with.
+function ns.Todo()
+	local out = {}
+	if ns.InOurGuild() and IsGuildLeader() then
+		local pending, overdue, ledger = 0, 0, 0
+		if SwedbankPanel and SwedbankPanel.LeaderTodo then pending, overdue, ledger = SwedbankPanel.LeaderTodo() end
+		ledger = ledger or 0
+		-- Loans mailed from his gold, or repayments mailed to him (Zach 10/11):
+		-- settled by itself at the next guild bank visit.
+		if ledger > 0 then
+			table.insert(out, { text = string.format("Guildbanken är skyldig dig %s (lån du skickat)", ns.Money(ledger)), click = function() ns.ShowTab(6) end })
+		elseif ledger < 0 then
+			table.insert(out, { text = string.format("Sätt in %s i guildbanken (lånebetalningar)", ns.Money(-ledger)), click = function() ns.ShowTab(6) end })
+		end
+		if pending > 0 then
+			table.insert(out, { text = string.format("%d låneansökning%s väntar", pending, pending == 1 and "" or "ar"), click = function() ns.ShowTab(6) end })
+		end
+		if overdue > 0 then
+			table.insert(out, { text = string.format("%d lån är försenade", overdue), click = function() ns.ShowTab(6) end })
+		end
+		for _, name in ipairs(ns.ToPromote and ns.ToPromote() or {}) do
+			table.insert(out, { text = string.format("Ge %s rangen %s", name, ns.CITIZEN_RANK), click = function() ns.PromoteToCitizen(name) end })
+		end
+	end
+	-- Who left while he was away (Zach 10/11).
+	for _, t in ipairs(ns.LeaverTodo and ns.LeaverTodo() or {}) do table.insert(out, t) end
+	local orders = ns.OrdersToDo and ns.OrdersToDo() or 0
+	if orders > 0 then
+		table.insert(out, { text = string.format("%d arbetsorder%s väntar på dig", orders, orders == 1 and "" or "ar"), click = function() ns.ShowTab(8) end })
+	end
+	return out
+end
+
+function ns.RefreshTodo()
+	if not button or not button.notice then return end
+	-- Orders have their own hammer; the ! is for the rest.
+	local others = 0
+	for _, t in ipairs(ns.Todo()) do
+		if not t.text:find("arbetsorder") then others = others + 1 end
+	end
+	button.notice:SetShown(others > 0)
+	if others > 0 then
+		if not button.noticePulse:IsPlaying() then button.noticePulse:Play() end
+	else
+		button.noticePulse:Stop()
+	end
+end
+
 local function Tooltip(self)
 	GameTooltip:SetOwner(self, "ANCHOR_LEFT")
 	GameTooltip:AddLine(ns.GUILD)
@@ -79,6 +131,12 @@ local function Tooltip(self)
 		-- Taxed whether approved or not, so always shown (Zach 8/11).
 		GameTooltip:AddLine("Skatt att betala: " .. ns.Money(math.max(ns.char.owed, 0)), 1, 1, 1)
 	end
+	local todo = ns.Todo()
+	if #todo > 0 then
+		GameTooltip:AddLine(" ")
+		GameTooltip:AddLine("Att göra:", 1, 0.82, 0)
+		for _, t in ipairs(todo) do GameTooltip:AddLine("  " .. t.text, 1, 1, 1) end
+	end
 	GameTooltip:AddLine(" ")
 	GameTooltip:AddLine("Vänsterklick: öppna panelen", 0.7, 0.7, 0.7)
 	GameTooltip:AddLine("Högerklick: välj Skatt, Yrken, Swedbank" .. (BokforingAPI and " eller Bokföring" or ""), 0.7, 0.7, 0.7)
@@ -95,6 +153,13 @@ function ns.AddonMenu(owner)
 	end
 	GameTooltip:Hide()
 	local menu = MenuUtil.CreateContextMenu(owner, function(_, root)
+		-- What waits for him first, each a click away (Zach 10/11).
+		local todo = ns.Todo()
+		if #todo > 0 then
+			root:CreateTitle("Att göra")
+			for _, t in ipairs(todo) do root:CreateButton(t.text, t.click) end
+			if root.CreateDivider then root:CreateDivider() end
+		end
 		root:CreateTitle("THÖNDERSTÖRM")
 		root:CreateButton("Skatt", function() ns.ShowTab(1) end)
 		root:CreateButton("Yrken", function() ns.ShowTab(2) end)
@@ -113,6 +178,7 @@ function ns.AddonMenu(owner)
 end
 
 function ns.RefreshOrderBadge()
+	ns.RefreshTodo()
 	if not button or not button.hammer then return end
 	local todo = ns.OrdersToDo and ns.OrdersToDo() or 0
 	button.hammer:SetShown(todo > 0)
@@ -213,9 +279,36 @@ function ns.BuildMinimap()
 	hammerFade:SetDuration(0.8)
 	hammerFade:SetSmoothing("IN_OUT")
 	button.hammer, button.hammerPulse = hammer, hammerPulse
+	-- A yellow ! in the top corner while something waits for him.
+	local notice = button:CreateTexture(nil, "OVERLAY", nil, 3)
+	notice:SetTexture("Interface\\GossipFrame\\AvailableQuestIcon")
+	notice:SetSize(14, 14)
+	notice:SetPoint("TOPLEFT", 1, -1)
+	notice:Hide()
+	local noticePulse = notice:CreateAnimationGroup()
+	noticePulse:SetLooping("BOUNCE")
+	local noticeFade = noticePulse:CreateAnimation("Alpha")
+	noticeFade:SetFromAlpha(0.4)
+	noticeFade:SetToAlpha(1)
+	noticeFade:SetDuration(0.7)
+	noticeFade:SetSmoothing("IN_OUT")
+	button.notice, button.noticePulse = notice, noticePulse
 	Place()
 	ns.RefreshMinimap()
 	ns.RefreshOrderBadge()
 	-- The standing ages with time; recolour now and then.
 	C_Timer.NewTicker(10, ns.RefreshMinimap)
 end
+
+-- New ranks and new signatures show in the roster.
+local roster = CreateFrame("Frame")
+roster:RegisterEvent("GUILD_ROSTER_UPDATE")
+local soon = false
+roster:SetScript("OnEvent", function()
+	if soon or not ns.db then return end
+	soon = true
+	C_Timer.After(2, function()
+		soon = false
+		ns.RefreshTodo()
+	end)
+end)

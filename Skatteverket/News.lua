@@ -9,6 +9,22 @@ local _, ns = ...
 
 -- Newest first. Written for members: no amounts, nothing leader-only.
 ns.NOTES = {
+	{ "0.27", "2026-11-10", {
+		"Arbetsorder: klicka på en order för att öppna den. Där står vad som är beställt (klicka på föremålet för att se det, shift-klicka för att länka det), antal, när den beställdes, vems material, dricks, reagenser, hur länge beställaren kan vänta och kommentaren. En ny order accepteras eller avböjs inne i ordern, så att den blir läst först.",
+		"Skatteverket säger till i chatten när någon lämnar guildet, också om det hände medan du var offline. /skatt lämnat visar de senaste 30 dagarna.",
+		"Bokföring 0.6: fliken Today överst visar högst fem saker att göra just nu för att tjäna guld: vad som lönar sig att tillverka och hur många, vad du har i väskan att lägga upp, och efter en vecka med priser även fynd att köpa och sälja igen, och vilken tid på dygnet det brukar säljas dyrast. Allt inom en dagsbudget (/bok budget 50g, annars en fjärdedel av ditt guld).",
+		"Bokföring 0.6: kryssrutan Level up sorterar recepten efter vad varje skillpoäng kostar eller ger i guld, och visar hur många du ska tillverka tills receptet blir grönt. Tillsammans med Can learn syns även recept du kan köpa och lära dig.",
+		"Bokföring: vanliga reagenser från försäljare (tråd, färg, flaskor, flux med mera) hamnar på försäljarlistan, inte på Auctionator-listan.",
+	} },
+	{ "0.26", "2026-11-10", {
+		"Ny version: kommer det en nyare Skatteverket, Swedbank eller Bokföring visas en ruta när du loggar in, med vad som är nytt att hämta. Uppdatera i WowUp.",
+		"Nytt visar också vem som kör vilken version av Bokföring.",
+		"Bokföring 0.4: fliken Market visar priset över tid för det du har tillverkat, med låg och hög per dag de senaste 30 dagarna och vilka veckodagar som brukar ligga högt eller lågt.",
+		"Bokföring: kolumnen Trend visar om priset går upp eller ned, och sökrutan hittar recept, föremål och reagenser.",
+		"Bokföring: högerklicka på ett recept och välj Watch för att följa priset på något du inte har tillverkat. Högerklicka i Market för att sluta följa.",
+		"Bokföring: History räknade fel på sålda saker när flera såldes för samma pris inom samma timme; det är rättat. Vill du börja om från noll: skriv /bok reset history. History visar nu också hur många du har lagt upp på AH (Posted) och hur många som ligger kvar (On AH).",
+		"Bokföring 0.5: kryssrutorna Can learn och Need skill visar recepten du inte har lärt dig på den här karaktären, med skillen de kräver, lägst först: vad du kan lära dig nu och vad du ska sikta på. Klicka på ett recept för att se var det finns: tränare, försäljare (namn och zon) eller drop, och priset på AH.",
+	} },
 	-- 0.25, not 0.24: so much is new (Zach 9/11).
 	{ "0.25", "2026-11-09", {
 		"Bokföring (/bok, på engelska, kräver Auctionator): vilka av dina recept som tjänar mest och faktiskt säljer, inköpslistor till Auctionator, vad du håller på att tillverka och vad ditt craftande verkligen har gett.",
@@ -89,7 +105,7 @@ end
 
 -- Everyone in the guild now, grouped by version, newest first; offline in
 -- grey, versions older than the newest seen in red (Zach 8/11). field is
--- "version" or "swed"; Swedbank's own Nytt tab reads this same data.
+-- "version", "swed" or "bok"; Swedbank's own Nytt tab reads this same data.
 function ns.VersionGroups(field)
 	local db, groups, newest = ns.db, {}, 0
 	local online = {}
@@ -106,7 +122,7 @@ function ns.VersionGroups(field)
 	for name in pairs(roster) do
 		local m = db.members[name]
 		local v = m and m[field]
-		if name == ns.Me() then v = field == "version" and ns.VERSION or ns.SwedbankVersion() end
+		if name == ns.Me() then v = field == "version" and ns.VERSION or field == "bok" and ns.BokforingVersion() or ns.SwedbankVersion() end
 		if not m and name ~= ns.Me() then v = "none" elseif not v or v == "" then v = "?" end
 		groups[v] = groups[v] or {}
 		table.insert(groups[v], name)
@@ -139,6 +155,7 @@ end
 local LABELS = {
 	version = { title = "Skatteverket", ["?"] = "Okänd version", none = "Saknar Skatteverket" },
 	swed = { title = "Swedbank", ["-"] = "Saknar Swedbank", ["?"] = "Okänd (Skatteverket 0.21 eller äldre)", none = "Saknar Skatteverket" },
+	bok = { title = "Bokföring", ["-"] = "Saknar Bokföring", ["?"] = "Okänd (Skatteverket 0.25 eller äldre)", none = "Saknar Skatteverket" },
 }
 
 local function Block(field)
@@ -155,7 +172,7 @@ end
 
 local function Versions()
 	if #ns.VersionGroups("version") == 0 then return GREY .. "Guildlistan har inte laddats än.|r\n " end
-	return Block("version") .. "\n" .. Block("swed")
+	return Block("version") .. "\n" .. Block("swed") .. "\n" .. Block("bok")
 end
 
 function ns.BuildNews(parent)

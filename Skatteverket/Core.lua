@@ -7,13 +7,13 @@
 -- guild leader's side is in Leader.lua and the /skatt window in Window.lua.
 --
 -- Guild channel, no amounts:
---   T;version;last deposit;debt since;good since;has paid;Swedbank version
+--   T;version;last deposit;debt since;good since;has paid;Swedbank version;Bokföring version
 --                                                           a member's standing; "-" when
 --                                                           Swedbank is not running (0.22)
 --   B                                                       ask the leader for the standings
 --   Q                                                       leader: everyone send your figures
 --   R;rate in basis points;stamp                            leader: the tax rate
---   E;name,last deposit,debt since,last seen,good since,has paid,version,Swedbank version;...
+--   E;name,last deposit,debt since,last seen,good since,has paid,version,Swedbank version,Bokföring version;...
 --                                                           leader: standings
 --   V;copper;server time[;reader]   the guild bank's balance, sent by whoever opened
 --                                   the bank; the leader adds who read it when relaying
@@ -33,7 +33,7 @@
 local _, ns = ...
 
 ns.GUILD = "THÖNDERSTÖRM"
-ns.VERSION = "0.25"
+ns.VERSION = "0.27"
 ns.SCHEMA = 9
 ns.PREFIX = "SKATT"
 ns.GOOD_HOURS = 48
@@ -43,7 +43,7 @@ local char, db
 local lastMoney
 local looting, lootGraceUntil, moneyMsgUntil, questUntil = false, 0, 0, 0
 local merchantOpen, mailOpen, tradeOpen, bankOpen = false, false, false, false
-local unclaimed, pendingDeposit, dirty, lastStanding, warnedVersion
+local unclaimed, pendingDeposit, dirty, lastStanding
 local privateDirty = true
 
 local function Print(text)
@@ -276,7 +276,7 @@ function ns.UpdateSelf()
 	m.version, m.incomeTotal, m.paid, m.owed = ns.VERSION, char.incomeTotal, char.paid, char.owed
 	m.lastDeposit, m.incomeSince, m.debtSince, m.lastSeen = char.lastDeposit or 0, char.incomeSince, char.debtSince, time()
 	m.goodSince, m.hasPaid = char.goodSince, char.paid > 0
-	m.swed = ns.SwedbankVersion()
+	m.swed, m.bok = ns.SwedbankVersion(), ns.BokforingVersion()
 	ns.Changed()
 end
 
@@ -286,6 +286,14 @@ function ns.SwedbankVersion()
 	local loaded = (C_AddOns and C_AddOns.IsAddOnLoaded) or IsAddOnLoaded
 	local meta = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
 	if loaded and meta and loaded("Swedbank") then return meta("Swedbank", "Version") or "-" end
+	return "-"
+end
+
+-- The same for Bokföring (10/11), for the update popup and Nytt.
+function ns.BokforingVersion()
+	local loaded = (C_AddOns and C_AddOns.IsAddOnLoaded) or IsAddOnLoaded
+	local meta = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
+	if loaded and meta and loaded("Bokforing") then return meta("Bokforing", "Version") or "-" end
 	return "-"
 end
 
@@ -304,8 +312,8 @@ end
 local function SendStatus()
 	if not char or not ns.InOurGuild() then return end
 	dirty = false
-	ns.Send(string.format("T;%s;%d;%d;%d;%d;%s", ns.VERSION, char.lastDeposit or 0, char.debtSince or 0,
-		char.goodSince or 0, char.paid > 0 and 1 or 0, ns.SwedbankVersion()))
+	ns.Send(string.format("T;%s;%d;%d;%d;%d;%s;%s", ns.VERSION, char.lastDeposit or 0, char.debtSince or 0,
+		char.goodSince or 0, char.paid > 0 and 1 or 0, ns.SwedbankVersion(), ns.BokforingVersion()))
 	SendPrivate()
 end
 ns.SendStatus = SendStatus
@@ -612,21 +620,56 @@ local function Remind()
 end
 
 local function VersionNumber(v)
-	local major, minor = tostring(v or ""):match("^(%d+)%.(%d+)")
-	return major and (tonumber(major) * 1000 + tonumber(minor)) or 0
+	-- 0.4.1: the third part counts too (10/11).
+	local major, minor, patch = tostring(v or ""):match("^(%d+)%.(%d+)%.?(%d*)")
+	return major and (tonumber(major) * 1000000 + tonumber(minor) * 1000 + (tonumber(patch) or 0)) or 0
 end
 
 ns.VersionNumber = VersionNumber
 
-local function CheckVersion(v)
-	if not warnedVersion and VersionNumber(v) > VersionNumber(ns.VERSION) then
-		warnedVersion = true
-		Print("det finns en nyare Skatteverket (" .. v .. "); be guildledaren om den. Din skattehistorik följer med.")
+-- A newer version of any of the three, seen on a guildmate (Zach 10/11):
+-- one popup a session naming each, out of combat. An addon not running
+-- here is never asked for.
+local newer, updateShown = {}, false
+
+StaticPopupDialogs.SKATTEVERKET_UPDATE = {
+	text = "%s",
+	button1 = OKAY,
+	timeout = 0,
+	whileDead = true,
+	hideOnEscape = true,
+}
+
+local function ShowUpdate()
+	if updateShown or not next(newer) then return end
+	if InCombatLockdown() then
+		C_Timer.After(10, ShowUpdate)
+		return
 	end
+	updateShown = true
+	local lines = {}
+	for _, name in ipairs({ "Skatteverket", "Swedbank", "Bokföring" }) do
+		if newer[name] then table.insert(lines, name .. " " .. newer[name]) end
+	end
+	StaticPopup_Show("SKATTEVERKET_UPDATE", "Ny version finns:\n\n" .. table.concat(lines, "\n")
+		.. "\n\nUppdatera guild-addons i WowUp och starta om spelet. Din historik följer med.")
 end
 
+local function Newer(name, seen, own)
+	if not own or own == "-" or VersionNumber(seen) <= VersionNumber(own) then return end
+	if VersionNumber(seen) > VersionNumber(newer[name]) then newer[name] = seen end
+end
+
+local function CheckVersion(skatt, swed, bok)
+	Newer("Skatteverket", skatt, ns.VERSION)
+	Newer("Swedbank", swed, ns.SwedbankVersion())
+	Newer("Bokföring", bok, ns.BokforingVersion())
+	if next(newer) and not updateShown then C_Timer.After(5, ShowUpdate) end
+end
+
+
 local function OnPublic(sender, parts)
-	CheckVersion(parts[2])
+	CheckVersion(parts[2], parts[7], parts[8])
 	if sender == ns.Me() then return end
 	local m = db.members[sender] or { firstSeen = time() }
 	db.members[sender] = m
@@ -638,6 +681,8 @@ local function OnPublic(sender, parts)
 	m.hasPaid = parts[6] == "1"
 	-- 0.21 and older send no Swedbank version; unknown until they update.
 	m.swed = parts[7]
+	-- 0.25 and older send no Bokföring version.
+	m.bok = parts[8]
 	m.lastSeen = time()
 	ns.Changed()
 end
@@ -646,7 +691,8 @@ end
 local function OnBoard(parts)
 	local me = ns.Me()
 	for i = 2, #parts do
-		local name, lastDeposit, debtSince, lastSeen, goodSince, hasPaid, version, swed = strsplit(",", parts[i])
+		local name, lastDeposit, debtSince, lastSeen, goodSince, hasPaid, version, swed, bok = strsplit(",", parts[i])
+		CheckVersion(version, swed, bok)
 		lastSeen = tonumber(lastSeen)
 		if name and lastSeen and name ~= me then
 			local m = db.members[name]
@@ -660,6 +706,7 @@ local function OnBoard(parts)
 				m.hasPaid = hasPaid == "1"
 				if version and version ~= "" then m.version = version end
 				if swed and swed ~= "" then m.swed = swed end
+				if bok and bok ~= "" then m.bok = bok end
 			end
 		end
 	end
@@ -709,6 +756,7 @@ OnWhisper = function(sender, msg)
 	-- Arbetsordrar, between any two members (Orders.lua).
 	if kind == "O" then ns.OnOrder(sender, parts)
 	elseif kind == "D" then ns.OnOrderState(sender, parts)
+	elseif kind == "L" then ns.OnOrderSent(sender, parts)
 	end
 	if sender == ns.Leader() then
 		if kind == "A" then ns.ApplyAdjustment(parts[2], parts[3], tonumber(parts[4]))
@@ -937,7 +985,7 @@ SlashCmdList.SKATTEVERKET = function(msg)
 	-- Swedish words, with the English ones of earlier versions still working.
 	cmd = ({ betala = "pay", sats = "rate", ["efterskänk"] = "forgive", kredit = "credit", synka = "sync", lista = "list",
 		["anmälan"] = "register", anmalan = "register", yrken = "professions",
-		["hjälp"] = "help", hjalp = "help", nytt = "news" })[cmd] or cmd
+		["hjälp"] = "help", hjalp = "help", nytt = "news", ["lämnat"] = "left", lamnat = "left" })[cmd] or cmd
 	if cmd == "" or cmd == "list" then
 		ns.ToggleWindow()
 	elseif cmd == "register" then
@@ -946,6 +994,9 @@ SlashCmdList.SKATTEVERKET = function(msg)
 		ns.ShowHelp()
 	elseif cmd == "news" then
 		ns.ToggleWindow(4)
+	elseif cmd == "left" then
+		-- Who left the guild, the last 30 days (Zach 10/11).
+		ns.ListLeavers()
 	elseif cmd == "prestationstest" and ns.PRESTATIONER then
 		ns.AchievementTest(rest)
 	elseif cmd == "prestationer" and ns.PRESTATIONER then

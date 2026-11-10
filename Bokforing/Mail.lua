@@ -49,27 +49,92 @@ local function SoldMails()
 	return out
 end
 
--- Note every sold mail not seen before; drop sales older than a month.
-local function ReadSales()
-	local db = ns.db
-	db.sales = db.sales or {}
-	db.salesSeen = db.salesSeen or {}
-	local now = time()
-	for _, m in ipairs(SoldMails()) do
-		if m.item and not db.salesSeen[m.key] then
-			db.salesSeen[m.key] = now
-			db.sales[m.item] = db.sales[m.item] or {}
-			table.insert(db.sales[m.item], { at = now, count = m.count, money = m.money })
+-- Auctions that came back (Zach 10/11): expired or cancelled, the item
+-- attached; for On AH in the history.
+local function Pattern(text)
+	return "^" .. text:gsub("([%(%)%.%+%-%*%?%[%]%^%$])", "%%%1"):gsub("%%s", "(.+)") .. "$"
+end
+local function ReturnMails()
+	local out = {}
+	if not GetInboxNumItems or not GetInboxHeaderInfo then return out end
+	local patterns = { Pattern(AUCTION_EXPIRED_MAIL_SUBJECT or "Auction expired: %s"), Pattern(AUCTION_REMOVED_MAIL_SUBJECT or "Auction cancelled: %s") }
+	for i = 1, GetInboxNumItems() do
+		local _, _, _, subject, _, _, daysLeft, itemCount = GetInboxHeaderInfo(i)
+		local name
+		for _, p in ipairs(patterns) do name = name or (subject and subject:match(p)) end
+		if name and (itemCount or 0) > 0 then
+			local count = GetInboxItem and select(4, GetInboxItem(i, 1)) or 1
+			table.insert(out, { item = name, count = count or 1, money = 0, key = Seen(subject, count, name, daysLeft) })
 		end
 	end
-	for item, list in pairs(db.sales) do
+	return out
+end
+
+-- Note every sold (and returned) mail not seen before; drop what is older
+-- than 90 days. Mails of the same item at the same price in the same hour
+-- look alike (Zach 10/11: 82 Deadly Blunderbuss crafted, 11 counted sold,
+-- since each such batch was taken for one sale), so the inbox's count of
+-- each kind is kept: more than before is new; fewer within one visit is
+-- mail taken, which makes room for the next ones that look the same.
+local visit = {}
+local function Note(mails, store, counts, now)
+	local db = ns.db
+	local here, first = {}, {}
+	for _, m in ipairs(mails) do
+		if m.item then
+			here[m.key] = (here[m.key] or 0) + 1
+			first[m.key] = first[m.key] or m
+		end
+	end
+	for key, n in pairs(here) do
+		-- Seen by an older version: one of them.
+		local had = db.salesSeenN[key] or (db.salesSeen[key] and 1 or 0)
+		local m = first[key]
+		for _ = had + 1, n do
+			store[m.item] = store[m.item] or {}
+			table.insert(store[m.item], { at = now, count = m.count, money = m.money })
+		end
+		db.salesSeenN[key] = math.max(had, n)
+		db.salesSeen[key] = db.salesSeen[key] or now
+		counts[key] = n
+	end
+end
+
+local function Drop(store, now)
+	for item, list in pairs(store) do
 		for i = #list, 1, -1 do
 			if now - list[i].at > KEEP_DAYS * 86400 then table.remove(list, i) end
 		end
-		if #list == 0 then db.sales[item] = nil end
+		if #list == 0 then store[item] = nil end
 	end
+end
+
+local function ReadSales()
+	local db = ns.db
+	db.sales = db.sales or {}
+	db.returns = db.returns or {}
+	db.salesSeen = db.salesSeen or {}
+	db.salesSeenN = db.salesSeenN or {}
+	local now, counts = time(), {}
+	local sold, back = SoldMails(), ReturnMails()
+	-- Taken since the last look in this visit.
+	local here = {}
+	for _, m in ipairs(sold) do here[m.key] = (here[m.key] or 0) + 1 end
+	for _, m in ipairs(back) do here[m.key] = (here[m.key] or 0) + 1 end
+	for key, before in pairs(visit) do
+		local taken = before - (here[key] or 0)
+		if taken > 0 and db.salesSeenN[key] then db.salesSeenN[key] = math.max(0, db.salesSeenN[key] - taken) end
+	end
+	Note(sold, db.sales, counts, now)
+	Note(back, db.returns, counts, now)
+	visit = counts
+	Drop(db.sales, now)
+	Drop(db.returns, now)
 	for key, at in pairs(db.salesSeen) do
-		if now - at > (KEEP_DAYS + 31) * 86400 then db.salesSeen[key] = nil end
+		if now - at > (KEEP_DAYS + 31) * 86400 then
+			db.salesSeen[key] = nil
+			db.salesSeenN[key] = nil
+		end
 	end
 end
 
@@ -196,10 +261,13 @@ end
 -- on the game's "system message in primary" missed it), and without
 -- anchors, since chat timestamps come first.
 local function SoldNotice(text)
+	-- In battlegrounds and instances chat text can be secret (Zach 9/11,
+	-- Arathi Basin): reading it is an error, and no sale notice comes there.
+	if issecretvalue and issecretvalue(text) then return end
 	if type(text) ~= "string" or not ERR_AUCTION_SOLD_S then return end
 	local pattern = ERR_AUCTION_SOLD_S:gsub("([%(%)%.%+%-%*%?%[%]%^%$])", "%%%1"):gsub("%%s", "(.-)")
-	local item = text:match(pattern)
-	if not item then return end
+	local ok, item = pcall(string.match, text, pattern)
+	if not ok or not item then return end
 	ns.lastNotice = text
 	local each = ns.ExpectedEach and ns.ExpectedEach(item)
 	local copy = text .. (each and string.format(" |cffffd100Bokföring expected %s each.|r", ns.Money(each)) or "")
@@ -235,6 +303,7 @@ events:SetScript("OnEvent", function(_, event)
 	if event == "MAIL_CLOSED" then
 		collecting = false
 	elseif event == "MAIL_SHOW" then
+		visit = {}
 		ShowButton()
 		ReadSales()
 		Glow()

@@ -50,6 +50,7 @@ local function Me()
 	local name, realm = UnitName("player"), GetRealmName and GetRealmName()
 	return name and (realm and realm ~= "" and name .. "-" .. realm or name)
 end
+ns.MeKey = Me
 
 -- Prices -----------------------------------------------------------------
 
@@ -65,9 +66,21 @@ local function Ask(method, item)
 end
 
 -- Lowest auction house price in copper, and its age in days, or nil.
-function ns.AH(item)
+-- While ns.Rows works, each item is asked once (Zach 10/11: All recipes
+-- took half a second, mostly asking Auctionator the same reagents).
+local ahMemo
+local function AskAH(item)
 	local price = Ask("GetAuctionPriceByItemID", item)
 	if price and price > 0 then return price, Ask("GetAuctionAgeByItemID", item) end
+end
+function ns.AH(item)
+	if not ahMemo then return AskAH(item) end
+	local m = ahMemo[item]
+	if not m then
+		m = { AskAH(item) }
+		ahMemo[item] = m
+	end
+	return m[1], m[2]
 end
 
 -- What a merchant asks for one, as last seen, or nil.
@@ -75,10 +88,71 @@ function ns.Vendor(item)
 	return ns.db.vendor[item]
 end
 
+-- Reagents every trade goods or profession vendor sells (Zach 10/11: Fine
+-- Thread went on an auction house list because no vendor selling it had
+-- been open yet). Classic item numbers; the names come from the game, so a
+-- wrong number shows as a wrong name. Threads, dyes, bleach, salt, vials,
+-- flux, rods, wood, stocks, wiring, spices, water, coal.
+local VENDOR_GOODS = {}
+for _, item in ipairs({ 2320, 2321, 4291, 8343, 14341, 2324, 2325, 2604, 2605, 4340, 4341, 4342, 6260, 6261, 10290,
+	4289, 3371, 3372, 8925, 18256, 2880, 6217, 4470, 4399, 4400, 7191, 2678, 159, 3857 }) do
+	VENDOR_GOODS[item] = true
+end
+
+-- Bought at a vendor: seen at one, or one of the goods above.
+function ns.IsVendorGood(item)
+	return ns.db.vendor[item] ~= nil or VENDOR_GOODS[item] == true
+end
+
+-- A name the game has not loaded yet shows as "item 4416" and is asked
+-- for; when it arrives the window is drawn again (Zach 10/11: the line
+-- under a recipe said "item 4416" until opened a second time).
+local waitingNames, redraw = {}, false
 function ns.ItemName(item)
 	local name = (C_Item and C_Item.GetItemNameByID and C_Item.GetItemNameByID(item)) or (GetItemInfo and GetItemInfo(item))
-	if not name and C_Item and C_Item.RequestLoadItemDataByID then C_Item.RequestLoadItemDataByID(item) end
+	if not name and C_Item and C_Item.RequestLoadItemDataByID then
+		C_Item.RequestLoadItemDataByID(item)
+		waitingNames[item] = true
+	end
 	return name or ("item " .. item)
+end
+
+local names = CreateFrame("Frame")
+for _, event in ipairs({ "GET_ITEM_INFO_RECEIVED", "ITEM_DATA_LOAD_RESULT" }) do pcall(names.RegisterEvent, names, event) end
+names:SetScript("OnEvent", function(_, _, item)
+	if not waitingNames[item] then return end
+	waitingNames[item] = nil
+	if redraw then return end
+	redraw = true
+	C_Timer.After(0.2, function()
+		redraw = false
+		if ns.Refresh then ns.Refresh() end
+	end)
+end)
+
+-- An item's chat link; this client has GetItemInfo under C_Item only
+-- (Zach 10/11: clicking a fold-out was an error).
+function ns.ItemLink(item)
+	local f = (C_Item and C_Item.GetItemInfo) or GetItemInfo
+	if not f or not item then return end
+	local _, link = f(item)
+	if not link and C_Item and C_Item.RequestLoadItemDataByID then C_Item.RequestLoadItemDataByID(item) end
+	return link
+end
+
+-- What a vendor pays for one (Level up: what extra crafts are worth when
+-- the auction house will not take them).
+function ns.VendorSell(item)
+	local f = (C_Item and C_Item.GetItemInfo) or GetItemInfo
+	if not f then return 0 end
+	local sell = select(11, f(item))
+	return sell or 0
+end
+
+-- In the bags and the bank (the bank as of the last visit).
+function ns.Have(item)
+	if C_Item and C_Item.GetItemCount then return C_Item.GetItemCount(item, true) or 0 end
+	return GetItemCount and GetItemCount(item, true) or 0
 end
 
 local function ReadMerchant()
@@ -96,6 +170,7 @@ local function ReadMerchant()
 		-- Token-priced goods are not for gold.
 		if item and price and price > 0 and not extended then
 			ns.db.vendor[item] = price / math.max(quantity or 1, 1)
+			if ns.NoteRecipeVendor then ns.NoteRecipeVendor(item, price / math.max(quantity or 1, 1)) end
 		end
 	end
 end
@@ -143,6 +218,8 @@ local function ReadRecipes()
 				end
 			end
 			local old = ns.db.recipes[id] or { by = {} }
+			-- The skill each colour was read at, for the colour guide.
+			local mySkill = ns.MySkills and ns.MySkills()[profession]
 			local item = s.outputItemID
 			ns.db.recipes[id] = {
 				name = r.name,
@@ -151,8 +228,10 @@ local function ReadRecipes()
 				qty = ((s.quantityMin or 1) + (s.quantityMax or s.quantityMin or 1)) / 2,
 				reagents = reagents,
 				by = old.by,
+				seen = old.seen or {},
 			}
 			old.by[me] = COLOUR[r.relativeDifficulty] or COLOUR[r.difficulty] or "x"
+			if mySkill then ns.db.recipes[id].seen[me] = { old.by[me], mySkill } end
 			count = count + 1
 		end
 	end
@@ -163,8 +242,10 @@ end
 -- "All recipes" can rank professions he does not have. Skatteverket keeps
 -- them as keys "s<recipe>" per member and profession; the reagents and the
 -- made item are looked up here, since Forever answers for any recipe.
-local SKATT_PROFESSIONS = { ALC = "Alchemy", BS = "Blacksmithing", ENC = "Enchanting", ENG = "Engineering",
+local SKATT_PROFESSIONS
+SKATT_PROFESSIONS = { ALC = "Alchemy", BS = "Blacksmithing", ENC = "Enchanting", ENG = "Engineering",
 	LW = "Leatherworking", TAI = "Tailoring", COO = "Cooking", FA = "First Aid" }
+ns.SKATT_PROFESSIONS = SKATT_PROFESSIONS
 local looked = {}
 local function LookUp(id, profession)
 	if looked[id] ~= nil then return looked[id] or nil end
@@ -277,6 +358,7 @@ function ns.Scan(upTo)
 			scanner = nil
 			ns.db.catalog = found
 			ns.db.catalogAt = time()
+			ns.RowsChanged()
 			ns.Print(string.format("done: %d recipes, the highest number %d. All recipes now covers them.", count, highest))
 			if ns.Refresh then ns.Refresh() end
 		end
@@ -288,7 +370,12 @@ end
 local function Catalog()
 	for _, r in pairs(ns.db.catalog) do
 		r.by = r.by or {}
-		r.name = r.name or ns.ItemName(r.item)
+		-- Earlier versions kept the placeholder; drop it.
+		if r.name and r.name:match("^item %d+$") then r.name = nil end
+		if not r.name then
+			local name = ns.ItemName(r.item)
+			if not name:match("^item %d+$") then r.name = name end
+		end
 	end
 	return ns.db.catalog
 end
@@ -329,6 +416,12 @@ local function Cost(item, depth, seen, make)
 	local best, how, via
 	local v = ns.Vendor(item)
 	if v then best, how = v, "vendor" end
+	-- A vendor good not priced yet: the auction house price as a ceiling,
+	-- but bought at the vendor.
+	if not v and ns.IsVendorGood(item) then
+		local a = ns.AH(item)
+		if a then return a, "vendor" end
+	end
 	local a = ns.AH(item)
 	if a and (not best or a < best) then best, how = a, "ah" end
 	if depth < 4 and (make or not best) then
@@ -394,7 +487,30 @@ end
 -- One row per recipe that makes an item: cost, what it brings after the cut,
 -- profit per craft and the reagents' sources for the tooltip. Sorted by
 -- profit; rows without a price last. all adds the guild's recipes.
+-- Kept a minute, or until new data comes in (ns.RowsChanged), so ticking
+-- a box or typing a search does not work it all out again (Zach 10/11).
+local rowsCache = {}
+function ns.RowsChanged()
+	rowsCache = {}
+end
+
+local BuildRows
 function ns.Rows(profession, all)
+	local key = (profession or "") .. (all and "/all" or "/mine")
+	local c = rowsCache[key]
+	if c and time() - c.at < 60 then
+		pool, makers = c.pool, nil
+		return c.rows
+	end
+	ahMemo = {}
+	local ok, rows = pcall(BuildRows, profession, all)
+	ahMemo = nil
+	if not ok then error(rows) end
+	rowsCache[key] = { at = time(), rows = rows, pool = pool }
+	return rows
+end
+
+BuildRows = function(profession, all)
 	Pool(all)
 	makers = nil
 	local rows = {}
@@ -607,10 +723,12 @@ end
 local function Count(total, info, summary)
 	local counts, auctions = {}, {}
 	for i = 1, total do
-		local item, quantity, buyout, seller = info(i)
+		local item, quantity, buyout, seller, unit = info(i)
 		if item then
 			local c = counts[item] or { n = 0, q = 0 }
 			c.n, c.q = c.n + 1, c.q + (quantity or 1)
+			-- The lowest price for one, for the market history (Market.lua).
+			if unit and unit > 0 and (not c.lo or unit < c.lo) then c.lo = unit end
 			counts[item] = c
 			if summary then
 				auctions[item] = (auctions[item] or 0) + (quantity or 0)
@@ -623,6 +741,8 @@ local function Count(total, info, summary)
 		end
 	end
 	if not next(counts) then return end
+	if ns.RecordMarket then ns.RecordMarket(counts) end
+	if ns.RecordHours then ns.RecordHours(counts) end
 	local now = time()
 	local kind = summary and "summary" or "auctions"
 	local last = ns.db.snapshot
@@ -661,7 +781,7 @@ local function ReadReplicate()
 	ns.seen = "REPLICATE_ITEM_LIST_UPDATE, " .. tostring(ah.GetNumReplicateItems()) .. " auctions"
 	Count(ah.GetNumReplicateItems(), function(i)
 		local _, _, quantity, _, _, _, _, _, _, buyout, _, _, _, seller, _, _, item = ah.GetReplicateItemInfo(i)
-		return item, quantity, buyout, seller
+		return item, quantity, buyout, seller, buyout and buyout > 0 and buyout / math.max(quantity or 1, 1) or nil
 	end)
 end
 
@@ -675,7 +795,7 @@ local function ReadGetAll()
 	if not batch or batch <= 50 or batch ~= total then return end
 	Count(batch, function(i)
 		local _, _, quantity, _, _, _, _, _, _, buyout, _, _, _, seller, _, _, item = GetAuctionItemInfo("list", i)
-		return item, quantity, buyout, seller
+		return item, quantity, buyout, seller, buyout and buyout > 0 and buyout / math.max(quantity or 1, 1) or nil
 	end)
 end
 
@@ -727,7 +847,7 @@ local function ReadBrowse()
 	if asked then ns.scanAsked = true end
 	Count(#results, function(i)
 		local r = results[i]
-		return r.itemKey and r.itemKey.itemID, r.totalQuantity
+		return r.itemKey and r.itemKey.itemID, r.totalQuantity, nil, nil, r.minPrice
 	end, true)
 end
 ns.ReadBrowse = ReadBrowse
@@ -803,6 +923,7 @@ for _, event in ipairs({ "ADDON_LOADED", "TRADE_SKILL_SHOW", "TRADE_SKILL_LIST_U
 	pcall(events.RegisterEvent, events, event)
 end
 events:SetScript("OnEvent", function(_, event, name)
+	ns.RowsChanged()
 	if event == "ADDON_LOADED" then
 		if name ~= "Bokforing" then return end
 		BokforingDB = BokforingDB or {}
@@ -812,7 +933,8 @@ events:SetScript("OnEvent", function(_, event, name)
 		ns.db.listings = ns.db.listings or {}
 		ns.db.catalog = ns.db.catalog or {}
 		ns.db.turnover = ns.db.turnover or {}
-	elseif not ns.db then
+		ns.db.market = ns.db.market or {}
+	elseif not ns.db or (ns.Allowed and not ns.Allowed()) then
 		return
 	elseif event:match("^AUCTION") or event == "REPLICATE_ITEM_LIST_UPDATE" then
 		-- Every auction event this session, for /bok test (09/11: an
@@ -833,6 +955,7 @@ SLASH_BOKFORING1 = "/bok"
 SLASH_BOKFORING2 = "/bokforing"
 SlashCmdList.BOKFORING = function(msg)
 	msg = (msg or ""):lower():match("^%s*(.-)%s*$")
+	if ns.Allowed and not ns.Allowed() then return end
 	if msg == "test" then
 		-- Whether Auctionator's API is there, and a price it knows.
 		local api = API()
@@ -863,6 +986,9 @@ SlashCmdList.BOKFORING = function(msg)
 					table.sort(fields)
 				end
 				ns.Print(string.format("Recipe %d not learned: %s", id, #fields > 0 and table.concat(fields, ", ") or "no info"))
+				-- Where to get it and the skill it needs, if this client says (Zach 10/11).
+				local okSource, source = pcall(ui.GetRecipeSourceText or error, id)
+				ns.Print(string.format("Recipe %d source: %s", id, okSource and source and tostring(source):gsub("|", "||") or "none"))
 				break
 			end
 		end
@@ -880,6 +1006,23 @@ SlashCmdList.BOKFORING = function(msg)
 			noted[1].item, ns.Money(noted[1].money), date("%d/%m %H:%M", noted[1].at)) or ""))
 		ns.Print("History: " .. ns.HistoryTest() .. ".")
 		ns.Print("Sold notice copy: " .. ns.NoticeTest() .. ".")
+		ns.Print("Saved data: " .. ns.SizeTest() .. ".")
+		ns.Print("Recipes to learn: " .. ns.LearnTest() .. ".")
+		local profiles, ready = 0, 0
+		for item in pairs(ns.db.hours or {}) do
+			profiles = profiles + 1
+			if ns.HourProfile(item) then ready = ready + 1 end
+		end
+		ns.Print(string.format("Hours of the day: %d items followed, %d with 8 or more hours known.", profiles, ready))
+		-- What opening the window costs (Zach 10/11: a freeze).
+		ns.RowsChanged()
+		local t0 = debugprofilestop()
+		local mine = #ns.Rows(nil, false)
+		local t1 = debugprofilestop()
+		local all = #ns.Rows(nil, true)
+		local t2 = debugprofilestop()
+		ns.Print(string.format("Timing, worked out afresh: My recipes %d rows %.0f ms, All recipes %d rows %.0f ms; last window refresh %s ms (%s).",
+			mine, t1 - t0, all, t2 - t1, ns.refreshMs and string.format("%.0f", ns.refreshMs) or "?", ns.refreshWhat or "not opened"))
 		ns.Print("Last auction event: " .. (ns.seen or "none this session") .. ".")
 		local seenEvents = {}
 		for event, n in pairs(ns.events or {}) do table.insert(seenEvents, event .. " " .. n) end
@@ -897,6 +1040,9 @@ SlashCmdList.BOKFORING = function(msg)
 				break
 			end
 		end
+	elseif msg == "scan items" then
+		-- Read the recipe items again (Learn.lua), for skills and sources.
+		ns.ScanRecipeItems()
 	elseif msg:match("^scan") then
 		ns.Scan(tonumber(msg:match("^scan%s+(%d+)")))
 	elseif msg:match("^why") then
@@ -926,6 +1072,18 @@ SlashCmdList.BOKFORING = function(msg)
 		else
 			ns.Print("write it like /bok min 25s or /bok min 1g.")
 		end
+	elseif msg == "outside" then
+		-- Characters outside the guild running Bokföring (Zach 9/11).
+		ns.ListOutside()
+	elseif msg:match("^budget") then
+		-- Today's budget (Zach 10/11).
+		ns.SetBudget(msg:match("^budget%s*(.-)$") or "")
+	elseif msg == "reset history" then
+		-- A clean history (Zach 10/11), after a yes.
+		ns.ResetHistory()
+	elseif msg == "size" then
+		-- The size warning on demand (Zach 9/11), whatever the size.
+		ns.ShowSize()
 	elseif msg == "fullscan" then
 		-- The detailed scan, every single auction (Zach 9/11: try whether
 		-- Forever's server answers it); the result shows in chat.
@@ -936,7 +1094,7 @@ SlashCmdList.BOKFORING = function(msg)
 			ns.Print("this client has no detailed scan.")
 		end
 	elseif msg == "help" then
-		ns.Print("/bok opens the list; open each profession window once so its recipes are read, and scan with Auctionator for prices. /bok test checks Auctionator. /bok scan reads every recipe in the game once, for All recipes (/bok scan 2000000 to look further).")
+		ns.Print("/bok opens the list; open each profession window once so its recipes are read, and scan with Auctionator for prices. /bok test checks Auctionator. /bok size shows how big the saved data is, and can clean it. /bok reset history erases the history and starts again. /bok budget 50g sets how much Today may suggest spending a day (off: a quarter of your gold). /bok scan reads every recipe in the game once, for All recipes (/bok scan 2000000 to look further). /bok scan items reads the recipe items again, for the skill each recipe needs.")
 	else
 		ns.Toggle()
 	end

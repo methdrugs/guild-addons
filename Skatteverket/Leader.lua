@@ -70,8 +70,8 @@ function ns.ServeBoard()
 	for name, m in pairs(ns.db.members) do
 		-- Only people in the guild now.
 		if not roster or roster[name] then
-			local row = string.format("%s,%d,%d,%d,%d,%d,%s,%s", name, m.lastDeposit or 0, m.debtSince or 0,
-				m.lastSeen or 0, m.goodSince or 0, m.hasPaid and 1 or 0, m.version or "", m.swed or "")
+			local row = string.format("%s,%d,%d,%d,%d,%d,%s,%s,%s", name, m.lastDeposit or 0, m.debtSince or 0,
+				m.lastSeen or 0, m.goodSince or 0, m.hasPaid and 1 or 0, m.version or "", m.swed or "", m.bok or "")
 			if length + #row + 1 > 250 then
 				table.insert(chunks, "E;" .. table.concat(chunk, ";"))
 				chunk, length = {}, 2

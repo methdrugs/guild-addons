@@ -6,12 +6,17 @@
 -- repayments and marks the loan repaid. A borrower can also pay back
 -- straight into the guild bank from My loans (Zach 6/11); the payment
 -- reaches the leader by whisper, waiting while the leader is offline.
--- Interest is simple and weekly, on what is left of the loan, from the
--- day the gold is sent. A borrower sees only their own loans; nobody else
--- sees any.
+-- Interest: the weekly rate on what is left of the loan for every week
+-- begun, from the day after the gold is sent (0.11). The member asks for a
+-- rate, 3 % at least; the leader approves it, or offers another rate and
+-- last day, which the member accepts (back to the leader to confirm) or
+-- refuses, which ends the application (Zach 10/11). A borrower sees only
+-- their own loans; nobody else sees any.
 --
 -- Messages (all whispers):
---   member -> leader  APP;id;amount;repay by;applied at;reason
+--   member -> leader  AP2;id;amount;repay by;applied at;rate wished, basis points;reason
+--                     APP;id;amount;repay by;applied at;reason (0.10 and older)
+--                     ANS;id;1 or 0 (an offer accepted or refused)
 --                     PAY;loan id;payment id;amount;paid at (paid into the guild bank)
 --                     SYNC (send me my loans)
 --   leader -> member  ACK;id
@@ -26,7 +31,9 @@
 local _, ns = ...
 
 ns.GUILD = "THÖNDERSTÖRM"
-ns.VERSION = "0.10"
+ns.VERSION = "0.11"
+-- The lowest weekly rate a member may ask for (Zach 10/11).
+ns.MIN_RATE = 0.03
 ns.SCHEMA = 2
 ns.PREFIX = "SWEDBANK"
 ns.WEEK = 7 * 86400
@@ -191,22 +198,56 @@ end
 -- Interest on what is left of the loan; a payment goes to unpaid interest
 -- first, then to the loan. Returns what is left of the loan, the unpaid
 -- interest, and the two together.
+-- Interest (Zach 10/11): nothing on the day the gold is sent; from the
+-- next day every week begun adds the weekly rate on what is still lent
+-- (day 1-7 one week, day 8-14 two). Payments go to the interest first,
+-- then to the loan.
+function ns.InterestStart(sentAt)
+	local t = date("*t", sentAt)
+	t.day, t.hour, t.min, t.sec = t.day + 1, 0, 0, 0
+	return time(t)
+end
+
+-- Weeks begun by time t, counted from the day after sending.
+function ns.WeeksAt(sentAt, t)
+	local start = ns.InterestStart(sentAt)
+	if t < start then return 0 end
+	return math.floor((t - start) / ns.WEEK) + 1
+end
+
+-- When the next week's interest is added, after time t.
+function ns.NextInterest(sentAt, t)
+	return ns.InterestStart(sentAt) + ns.WeeksAt(sentAt, t) * ns.WEEK
+end
+
 function ns.Due(loan, now)
 	if not loan.sentAt then return loan.amount, 0, loan.amount end
 	now = now or time()
 	local stop = loan.closedAt and math.min(now, loan.closedAt) or now
-	local left, interest, t = loan.amount, 0, loan.sentAt
+	local payments = {}
 	for _, p in ipairs(loan.payments or {}) do
-		if p.verified ~= false then
-			local at = math.max(p.t, t)
-			interest = interest + left * loan.rate * (at - t) / ns.WEEK
-			t = at
-			local toInterest = math.min(p.amount, interest)
-			interest = interest - toInterest
-			left = math.max(0, left - (p.amount - toInterest))
-		end
+		if p.verified ~= false and p.t <= stop then table.insert(payments, p) end
 	end
-	if stop > t then interest = interest + left * loan.rate * (stop - t) / ns.WEEK end
+	table.sort(payments, function(x, y) return x.t < y.t end)
+	local left, interest, next = loan.amount, 0, 1
+	local function Pay(p)
+		local toInterest = math.min(p.amount, interest)
+		interest = interest - toInterest
+		left = math.max(0, left - (p.amount - toInterest))
+	end
+	local start = ns.InterestStart(loan.sentAt)
+	for week = 0, ns.WeeksAt(loan.sentAt, stop) - 1 do
+		local begins = start + week * ns.WEEK
+		while payments[next] and payments[next].t < begins do
+			Pay(payments[next])
+			next = next + 1
+		end
+		interest = interest + left * loan.rate
+	end
+	while payments[next] do
+		Pay(payments[next])
+		next = next + 1
+	end
 	interest = math.floor(interest)
 	return left, interest, left + interest
 end
@@ -364,6 +405,7 @@ ns.events = events
 for _, event in ipairs({
 	"ADDON_LOADED", "PLAYER_LOGIN", "CHAT_MSG_ADDON", "GUILD_ROSTER_UPDATE", "MAIL_SEND_SUCCESS", "MAIL_CLOSED", "PLAYER_MONEY",
 	"GUILDBANKFRAME_OPENED", "GUILDBANKFRAME_CLOSED", "PLAYER_INTERACTION_MANAGER_FRAME_SHOW", "PLAYER_INTERACTION_MANAGER_FRAME_HIDE", "GUILDBANKLOG_UPDATE", "MAIL_FAILED",
+	"ADDON_ACTION_BLOCKED", "ADDON_ACTION_FORBIDDEN",
 }) do
 	pcall(events.RegisterEvent, events, event)
 end
@@ -414,10 +456,17 @@ function SwedbankPanel.Refresh()
 end
 SwedbankPanel.VERSION = ns.VERSION
 function SwedbankPanel.HasLoan() return ns.HasLoan() end
+function SwedbankPanel.LeaderTodo() return ns.LeaderTodo() end
+function SwedbankPanel.OwedBy(name) return ns.OwedBy(name) end
 
 -- /swedbank opens the panel on the Swedbank tab, /swedbank nytt on Nytt.
 SlashCmdList.SWEDBANK = function(msg)
 	local news = (msg or ""):lower():match("^%s*nytt%s*$")
+	-- After moving the guild bank's money by hand (Zach 10/11).
+	if (msg or ""):lower():match("^%s*kvitt%s*$") and IsGuildLeader() and ns.ClearLedger then
+		ns.ClearLedger()
+		return
+	end
 	if not ns.InOurGuild() then
 		Print("den här karaktären är inte med i " .. ns.GUILD .. ".")
 	elseif not SkatteverketAPI then

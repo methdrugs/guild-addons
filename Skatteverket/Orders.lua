@@ -14,6 +14,8 @@
 --        the whole order, sent to the other party and to the leader, who
 --        keeps it for whoever is offline
 --   D;id;state;reason;stamp     a new state: accepterad, klar, avböjd, avbruten
+--   L;id;item:count,...;stamp   the orderer's materials sent so far, by mail
+--        or trade (Zach 10/11); also the 14th field of O
 -- Guild channel:
 --   X        at login: send me my orders; whoever holds some answers by whisper
 
@@ -45,8 +47,26 @@ local function State(o)
 	return o.state
 end
 
+-- Materials sent: { [itemID] = count } as "item:count,item:count".
+local function EncodeSent(sent)
+	local out = {}
+	for item, n in pairs(sent or {}) do table.insert(out, item .. ":" .. n) end
+	table.sort(out)
+	return table.concat(out, ",")
+end
+
+local function DecodeSent(text, into)
+	into = into or {}
+	for item, n in (text or ""):gmatch("(%d+):(%d+)") do
+		item, n = tonumber(item), tonumber(n)
+		into[item] = math.max(into[item] or 0, n)
+	end
+	return into
+end
+
 local function Pack(o)
-	return table.concat({ "O", o.id, o.from, o.to, o.key, o.count, o.mats, o["until"], o.stamp, o.state, o.reason or "", Clean(o.note), o.tip or "" }, ";")
+	return table.concat({ "O", o.id, o.from, o.to, o.key, o.count, o.mats, o["until"], o.stamp, o.state, o.reason or "", Clean(o.note), o.tip or "",
+		EncodeSent(o.sent) }, ";")
 end
 
 -- To the other party, and to the leader who keeps it for the offline.
@@ -151,6 +171,8 @@ function ns.OnOrder(sender, parts)
 	local old = Orders()[o.id]
 	if old and old.stamp >= o.stamp then return end
 	o.at = old and old.at or ns.Now()
+	-- Sent materials only grow; keep what was known.
+	o.sent = DecodeSent(parts[14], old and old.sent and DecodeSent(EncodeSent(old.sent)) or nil)
 	Orders()[o.id] = o
 	Tell(o, old)
 	Changed()
@@ -165,6 +187,15 @@ function ns.OnOrderState(sender, parts)
 	o.state, o.reason, o.stamp = state, parts[4] ~= "" and parts[4] or nil, stamp
 	Tell(o, old)
 	Changed()
+end
+
+function ns.OnOrderSent(sender, parts)
+	local o = Orders()[parts[2]]
+	if not o or ns.Online(sender) == nil then return end
+	if sender ~= o.from and sender ~= ns.Leader() then return end
+	o.sent = DecodeSent(parts[3], o.sent)
+	Changed()
+	if ns.RefreshOrderView then ns.RefreshOrderView(o) end
 end
 
 -- Someone logged in: the orders they are part of, from whoever holds them.
@@ -336,6 +367,291 @@ function ns.OrderDialog(to, key)
 	dialog:Show()
 end
 
+-- How far the orderer's materials are: sent, needed, and a coloured word
+-- (Zach 10/11: Yrken should make it clear that they have been sent).
+local function SentStatus(o)
+	if o.mats ~= "e" then return end
+	local d, need, sent = ns.RecipeData and ns.RecipeData(o.key), 0, 0
+	for _, r in ipairs(d and d.reagents or {}) do
+		need = need + r.count * o.count
+		sent = sent + math.min(o.sent and o.sent[r.itemID] or 0, r.count * o.count)
+	end
+	if need == 0 then return end
+	if sent >= need then return "|cff40ff40material skickat|r", sent, need end
+	if sent > 0 then return string.format("|cffff8040material %d/%d skickat|r", sent, need), sent, need end
+	return "|cffff4040material inte skickat|r", sent, need
+end
+
+-- The order itself (member feedback 10/11): clicked open from the list,
+-- with everything about it, and the only place to accept or decline a new
+-- one, so nobody accepts without reading it. The item is a link: hover for
+-- its tooltip, click to open it as from chat, shift-click to link it.
+local view
+local ShowOrder
+
+local function OpenLink(key)
+	local link = ns.RecipeLink(key)
+	if not link or not ItemRefTooltip then return end
+	if not ItemRefTooltip:IsShown() then ItemRefTooltip:SetOwner(UIParent, "ANCHOR_PRESERVE") end
+	ItemRefTooltip:SetHyperlink(link)
+	ItemRefTooltip:Show()
+end
+
+local function BuildView()
+	local ok
+	if HasTemplate("ButtonFrameTemplate") then ok, view = pcall(CreateFrame, "Frame", "SkatteverketOrderView", UIParent, "ButtonFrameTemplate") end
+	if not ok or not view then
+		view = CreateFrame("Frame", "SkatteverketOrderView", UIParent, BackdropTemplateMixin and "BackdropTemplate")
+		view:SetBackdrop({ bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background", edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+			tile = true, tileSize = 32, edgeSize = 32, insets = { left = 11, right = 12, top = 12, bottom = 11 } })
+	end
+	view:SetSize(400, 400)
+	view:SetPoint("CENTER", 0, 40)
+	view:SetFrameStrata("DIALOG")
+	view:SetToplevel(true)
+	view:EnableMouse(true)
+	view:SetMovable(true)
+	view:RegisterForDrag("LeftButton")
+	view:SetScript("OnDragStart", view.StartMoving)
+	view:SetScript("OnDragStop", view.StopMovingOrSizing)
+	tinsert(UISpecialFrames, "SkatteverketOrderView")
+	view.titleText = view.TitleText or (view.TitleContainer and view.TitleContainer.TitleText)
+	view.portraitTexture = view.portrait or view.Portrait or (view.PortraitContainer and view.PortraitContainer.portrait)
+
+	-- The item, as a link.
+	view.item = CreateFrame("Button", nil, view)
+	view.item:SetSize(300, 36)
+	view.item:SetPoint("TOPLEFT", 66, -30)
+	view.item.icon = view.item:CreateTexture(nil, "ARTWORK")
+	view.item.icon:SetSize(32, 32)
+	view.item.icon:SetPoint("LEFT")
+	view.item.text = view.item:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+	view.item.text:SetPoint("LEFT", view.item.icon, "RIGHT", 8, 0)
+	view.item.text:SetWidth(250)
+	view.item.text:SetJustifyH("LEFT")
+	view.item:RegisterForClicks("LeftButtonUp")
+	view.item:SetScript("OnEnter", function(self)
+		local link = view.order and ns.RecipeLink(view.order.key)
+		if not link then return end
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:SetHyperlink(link)
+		GameTooltip:Show()
+	end)
+	view.item:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	view.item:SetScript("OnClick", function()
+		local o = view.order
+		if not o then return end
+		if IsModifiedClick("CHATLINK") then
+			local link = ns.RecipeChatLink(o.key)
+			if link then ChatEdit_InsertLink(link) end
+		else
+			OpenLink(o.key)
+		end
+	end)
+
+	view.body = view:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+	view.body:SetPoint("TOPLEFT", 24, -80)
+	view.body:SetWidth(352)
+	view.body:SetJustifyH("LEFT")
+	view.body:SetJustifyV("TOP")
+	view.body:SetSpacing(3)
+
+	-- Buttons in the strip under the inset, as on the order dialog.
+	view.close = CreateFrame("Button", nil, view, "UIPanelButtonTemplate")
+	view.close:SetSize(90, 22)
+	view.close:SetPoint("BOTTOMRIGHT", -8, 4)
+	view.close:SetText("Stäng")
+	view.close:SetScript("OnClick", function() view:Hide() end)
+	view.b = CreateFrame("Button", nil, view, "UIPanelButtonTemplate")
+	view.b:SetSize(90, 22)
+	view.b:SetPoint("RIGHT", view.close, "LEFT", -4, 0)
+	view.a = CreateFrame("Button", nil, view, "UIPanelButtonTemplate")
+	view.a:SetSize(90, 22)
+	view.a:SetPoint("RIGHT", view.b, "LEFT", -4, 0)
+	view:Hide()
+end
+
+local function ViewButton(b, label, onClick)
+	if not label then
+		b:Hide()
+		return
+	end
+	b:SetText(label)
+	b:SetScript("OnClick", onClick)
+	b:Show()
+end
+
+ShowOrder = function(o)
+	if not view then BuildView() end
+	view.order = o
+	local me, state = ns.Me(), State(o)
+	local incoming = o.to == me
+	if view.titleText then view.titleText:SetText(incoming and ("Arbetsorder från " .. o.from) or ("Arbetsorder till " .. o.to)) end
+	local d = ns.RecipeData and ns.RecipeData(o.key)
+	local icon = (d and d.icon) or "Interface\\Icons\\INV_Misc_QuestionMark"
+	if view.SetPortraitToAsset then view:SetPortraitToAsset(icon) elseif view.portraitTexture then view.portraitTexture:SetTexture(icon) end
+	view.item.icon:SetTexture(icon)
+	local link = ns.RecipeChatLink(o.key)
+	view.item.text:SetText(string.format("%s x%d", link or RecipeName(o.key), o.count))
+	local lines = {
+		"|cffffd100Beställd:|r " .. date("%d/%m %H:%M", o.at or o.stamp),
+		string.format("|cffffd100Från:|r %s   |cffffd100Till:|r %s", o.from, o.to),
+		"|cffffd100Material:|r " .. (MATS[o.mats] or "?"),
+	}
+	local status = SentStatus(o)
+	if status then table.insert(lines, "|cffffd100Skickat:|r " .. status) end
+	if o.tip then table.insert(lines, "|cffffd100Dricks:|r ungefär " .. ns.Money(o.tip)) end
+	table.insert(lines, "|cffffd100Väntar till:|r " .. date("%d/%m %H:%M", o["until"]))
+	-- One line a reagent (Zach 10/11: names showed as "..." while loading;
+	-- the view is drawn again when they arrive), and what has been sent.
+	view.waiting = false
+	if d and d.reagents and #d.reagents > 0 then
+		table.insert(lines, "|cffffd100Reagenser:|r")
+		for _, r in ipairs(d.reagents) do
+			local name = ns.ItemName(r.itemID)
+			if not name then view.waiting = true end
+			local need = r.count * o.count
+			local sent = o.mats == "e" and (o.sent and o.sent[r.itemID] or 0)
+			local mark = sent and (sent >= need and string.format("  |cff40ff40skickat %d/%d|r", sent, need)
+				or string.format("  |cffff8040skickat %d/%d|r", sent, need)) or ""
+			table.insert(lines, string.format("   %d x %s%s", need, name or "|cff808080laddar...|r", mark))
+		end
+	end
+	table.insert(lines, "|cffffd100Kommentar:|r " .. ((o.note and o.note ~= "") and o.note or "|cff808080ingen|r"))
+	table.insert(lines, "|cffffd100Status:|r " .. STATE[state] .. (o.reason and (" (" .. o.reason .. ")") or ""))
+	view.body:SetText(table.concat(lines, "\n"))
+	local function After(newState, reason)
+		return function()
+			SetState(o, newState, reason)
+			ShowOrder(o)
+		end
+	end
+	if incoming and state == "ny" then
+		ViewButton(view.a, "Acceptera", After("accepterad"))
+		ViewButton(view.b, "Avböj", function(self) ns.DeclineOrder(self, o) end)
+	elseif incoming and state == "accepterad" then
+		ViewButton(view.a, "Avböj", function(self) ns.DeclineOrder(self, o) end)
+		ViewButton(view.b, "Klar", After("klar"))
+	elseif not incoming and OPEN[state] then
+		ViewButton(view.a, nil)
+		ViewButton(view.b, "Avbryt", After("avbruten"))
+	else
+		ViewButton(view.a, nil)
+		ViewButton(view.b, nil)
+	end
+	view:Show()
+end
+ns.ShowOrder = function(o) ShowOrder(o) end
+
+-- Drawn again for news about the order shown, or names that loaded.
+function ns.RefreshOrderView(o)
+	if view and view:IsShown() and (not o or view.order == o) then ShowOrder(view.order) end
+end
+local names = CreateFrame("Frame")
+names:RegisterEvent("GET_ITEM_INFO_RECEIVED")
+local soon = false
+names:SetScript("OnEvent", function()
+	if soon or not (view and view:IsShown() and view.waiting) then return end
+	soon = true
+	C_Timer.After(0.2, function()
+		soon = false
+		ns.RefreshOrderView()
+	end)
+end)
+
+-- Materials sent (Zach 10/11): what the orderer mails or trades to the
+-- crafter counts against the reagents of their open orders with that
+-- crafter where the orderer sends the materials, oldest order first. Both
+-- ends and the leader get the totals.
+local function Matches(target, name)
+	if not target or not name then return false end
+	target, name = target:lower(), name:lower()
+	return target == name or name:match("^(%S+)") == target
+end
+
+local function Delivered(target, items)
+	local me, list = ns.Me(), {}
+	for _, o in pairs(Orders()) do
+		if o.from == me and o.mats == "e" and OPEN[State(o)] and Matches(target, o.to) then table.insert(list, o) end
+	end
+	table.sort(list, function(a, b) return a.at < b.at end)
+	for _, o in ipairs(list) do
+		local d = ns.RecipeData and ns.RecipeData(o.key)
+		local counted = {}
+		for _, r in ipairs(d and d.reagents or {}) do
+			o.sent = o.sent or {}
+			local need = r.count * o.count - (o.sent[r.itemID] or 0)
+			local give = math.min(items[r.itemID] or 0, math.max(0, need))
+			if give > 0 then
+				o.sent[r.itemID] = (o.sent[r.itemID] or 0) + give
+				items[r.itemID] = items[r.itemID] - give
+				table.insert(counted, string.format("%d x %s", give, ns.ItemName(r.itemID) or "?"))
+			end
+		end
+		if #counted > 0 then
+			o.stamp = ns.Now()
+			Share(o, table.concat({ "L", o.id, EncodeSent(o.sent), o.stamp }, ";"))
+			ns.Print(string.format("material till %s för %s x%d: %s.", o.to, RecipeName(o.key), o.count, table.concat(counted, ", ")))
+			Changed()
+			if ns.RefreshOrderView then ns.RefreshOrderView(o) end
+		end
+	end
+end
+
+-- Mail: the attachments at SendMail, counted once the mail has gone.
+local pendingMail
+if SendMail then
+	hooksecurefunc("SendMail", function(target)
+		local items = {}
+		for i = 1, ATTACHMENTS_MAX_SEND or 12 do
+			local _, item, _, count = GetSendMailItem(i)
+			if item then items[item] = (items[item] or 0) + (count or 1) end
+		end
+		pendingMail = next(items) and { to = target, items = items } or nil
+	end)
+end
+
+-- Trade: what he put in, counted when the trade completes.
+local trade
+local function ReadTrade()
+	if not trade then return end
+	local items = {}
+	for i = 1, MAX_TRADABLE_ITEMS or 6 do
+		local link = GetTradePlayerItemLink and GetTradePlayerItemLink(i)
+		local item = link and tonumber(link:match("item:(%d+)"))
+		local count = item and select(3, GetTradePlayerItemInfo(i))
+		if item then items[item] = (items[item] or 0) + (count or 1) end
+	end
+	trade.items = items
+end
+
+local tracker = CreateFrame("Frame")
+for _, event in ipairs({ "MAIL_SEND_SUCCESS", "MAIL_FAILED", "TRADE_SHOW", "TRADE_PLAYER_ITEM_CHANGED", "TRADE_ACCEPT_UPDATE",
+	"TRADE_CLOSED", "UI_INFO_MESSAGE" }) do
+	pcall(tracker.RegisterEvent, tracker, event)
+end
+tracker:SetScript("OnEvent", function(_, event, a, b)
+	if not ns.db then return end
+	if event == "MAIL_SEND_SUCCESS" then
+		if pendingMail then Delivered(pendingMail.to, pendingMail.items) end
+		pendingMail = nil
+	elseif event == "MAIL_FAILED" then
+		pendingMail = nil
+	elseif event == "TRADE_SHOW" then
+		trade = { with = UnitName("NPC") }
+	elseif event == "TRADE_PLAYER_ITEM_CHANGED" or event == "TRADE_ACCEPT_UPDATE" then
+		ReadTrade()
+	elseif event == "UI_INFO_MESSAGE" then
+		-- The message is the second value on newer clients.
+		local text = type(b) == "string" and b or a
+		if issecretvalue and issecretvalue(text) then return end
+		if trade and trade.items and text == ERR_TRADE_COMPLETE then
+			Delivered(trade.with, trade.items)
+			trade = nil
+		end
+	end
+end)
+
 -- The Arbetsorder page, a side tab of the Yrken window (Zach 9/11) ---------
 
 local page, rows, offset = nil, {}, 0
@@ -346,15 +662,20 @@ local function Act(o, state, reason)
 end
 
 local function Decline(owner, o)
+	local function Done(reason)
+		Act(o, "avböjd", reason)
+		if view and view:IsShown() and view.order == o then ShowOrder(o) end
+	end
 	if not (MenuUtil and MenuUtil.CreateContextMenu) then
-		Act(o, "avböjd", REASONS[3])
+		Done(REASONS[3])
 		return
 	end
 	MenuUtil.CreateContextMenu(owner, function(_, root)
 		root:CreateTitle("Avböj, därför att:")
-		for _, reason in ipairs(REASONS) do root:CreateButton(reason, function() Act(o, "avböjd", reason) end) end
+		for _, reason in ipairs(REASONS) do root:CreateButton(reason, function() Done(reason) end) end
 	end)
 end
+ns.DeclineOrder = Decline
 
 function ns.BuildOrders(parent)
 	page = parent
@@ -393,9 +714,14 @@ function ns.BuildOrders(parent)
 			GameTooltip:AddLine("Väntar till " .. date("%d/%m %H:%M", o["until"]), 1, 1, 1)
 			if o.note and o.note ~= "" then GameTooltip:AddLine("Anteckning: " .. o.note, 1, 1, 1, true) end
 			GameTooltip:AddLine("Status: " .. STATE[State(o)] .. (o.reason and (" (" .. o.reason .. ")") or ""), 1, 0.82, 0)
+			GameTooltip:AddLine("Klicka för att öppna ordern.", 0.6, 0.6, 0.6)
 			GameTooltip:Show()
 		end)
 		row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+		-- Click an order to open it (member feedback 10/11).
+		row:SetScript("OnMouseUp", function(self)
+			if self.order then ShowOrder(self.order) end
+		end)
 		rows[i] = row
 	end
 	parent:EnableMouseWheel(true)
@@ -466,10 +792,14 @@ function ns.RefreshOrders()
 			local colour = OPEN[state] and "|cffffffff" or "|cff808080"
 			-- To the crafter: whose materials, in their words.
 			local mats = line.incoming and (o.mats == "e" and "deras material, " or ("ditt material" .. (o.tip and (" +" .. ns.Money(o.tip)) or "") .. ", ")) or ""
+			-- Materials the orderer sends: how far along, while the order is open.
+			local status = OPEN[state] and SentStatus(o)
+			if status then mats = (line.incoming and "" or mats) .. status .. ", " end
 			row.text:SetText(string.format("%s%s x%d|r  %s, %s%s", colour, RecipeName(o.key), o.count, who, mats, STATE[state]:lower()))
 			if line.incoming and state == "ny" then
-				Button(row.a, "Acceptera", function() Act(o, "accepterad") end)
-				Button(row.b, "Avböj", function(self) Decline(self, o) end)
+				-- Accepted only from the opened order, after reading it.
+				Button(row.a, nil)
+				Button(row.b, "Öppna", function() ShowOrder(o) end)
 			elseif line.incoming and state == "accepterad" then
 				Button(row.a, "Avböj", function(self) Decline(self, o) end)
 				Button(row.b, "Klar", function() Act(o, "klar") end)

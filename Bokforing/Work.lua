@@ -35,7 +35,7 @@ local function Reagents(p)
 end
 
 local function Where(item)
-	return ns.Vendor(item) and "vendor" or "auction house"
+	return ns.IsVendorGood(item) and "vendor" or "auction house"
 end
 
 -- The lines to show: per list a title, the reagents for the crafts left,
@@ -51,7 +51,7 @@ local function Lines()
 			if (p.bought[item] or 0) < n then bought = false end
 		end
 		local open = p.order and not bought or (not p.order and made < p.crafts)
-		if not p.done and now - p.at < SHOW_DAYS * 86400 and open then
+		if not p.done and not p.flip and now - p.at < SHOW_DAYS * 86400 and open then
 			table.insert(lines, { plan = p, made = made })
 			local left = p.order and p.crafts or p.crafts - made
 			table.insert(lines, { label = p.order and string.format("To send to %s", p.order) or string.format("For the %d crafts left", left) })

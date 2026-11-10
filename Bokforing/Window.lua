@@ -4,8 +4,9 @@
 -- window, which shows that profession only. Hover a row for what goes into
 -- it and where each reagent is cheapest.
 -- Three views (Zach 9/11): his own recipes (the baseline), all recipes with
--- those guild members share, and gathering prices. The history is a side
--- tab (Zach 9/11).
+-- those guild members share, and gathering prices. The history and the
+-- market are side tabs (Zach 9/11); the search box filters the recipes and
+-- the market's items.
 
 local _, ns = ...
 
@@ -14,27 +15,35 @@ local COLOURS = { o = { 1, 0.5, 0.25 }, y = { 1, 1, 0 }, g = { 0.25, 0.75, 0.25 
 -- The columns, defined below the helpers they use; he picks which show
 -- (Zach 9/11: right-click a header), saved for the account.
 local COLUMNS, GATHER, Shown
-local MAX_COLUMNS = 12
+local MAX_COLUMNS = 16
 local OLD_DAYS = 2
+local SKILL_HEX = { o = "ff8040", y = "ffff00", g = "40c040", x = "808080", r = "ff4040" }
 local MODES = { "mine", "all", "gather" }
 local MODE_NAMES = { mine = "My recipes", all = "All recipes", gather = "Gathering" }
 -- Side tabs on the right edge (Zach 9/11): the list, what he is making now
 -- from his shopping lists, and the history of what crafting through
 -- Bokföring really earned.
-local TABS = { { "recipes", "Recipes", "Interface\\Icons\\INV_Scroll_03" }, { "work", "Making now", "Interface\\Icons\\INV_Hammer_20" },
-	{ "history", "History", "Interface\\Icons\\INV_Misc_Book_09" } }
+local TABS = { { "today", "Today", "Interface\\Icons\\INV_Misc_PocketWatch_01" }, { "recipes", "Recipes", "Interface\\Icons\\INV_Scroll_03" }, { "work", "Making now", "Interface\\Icons\\INV_Hammer_20" },
+	{ "market", "Market", "Interface\\Icons\\INV_Misc_Spyglass_03" }, { "history", "History", "Interface\\Icons\\INV_Misc_Book_09" } }
 
 local frame, rows, list, offset = nil, {}, {}, 0
 local profession, skillUps
 local sellable = true
--- Me dumb, me craft now (Zach 9/11): only what earns at least the bar a
--- day and has sold at all; named so anyone gets it at a glance.
-local dumb = false
-local DUMB_MIN = 1000
+-- Level up (Zach 10/11): the crafts that raise this character's skill
+-- for the least gold, or the most, money per skill point first; with Can
+-- learn also recipes to buy. Me dumb, me craft now became the Today tab.
+local levelUp = false
 -- Profit a day first: what actually brings money in (Zach 9/11).
 local sortKey, sortUp = "perDay", false
 local mode = "mine"
-local page = "recipes"
+-- Today first (Zach 10/11): the page that tells what to do.
+local page = "today"
+-- Recipes to go and get (Zach 10/11): not learned on this character and
+-- its skill is enough, or more skill is needed first; a left-click on one
+-- folds out where it comes from.
+local canLearn, needSkill = false, false
+local Counts
+local expanded = {}
 
 local function Text(parent, font, x, width, justify)
 	local t = parent:CreateFontString(nil, "OVERLAY", font)
@@ -77,6 +86,13 @@ local function Tooltip(row)
 		GameTooltip:Show()
 		return
 	end
+	if r.learn then
+		local info = ns.LearnInfo(r.parent.recipe)
+		if info.item then GameTooltip:SetItemByID(info.item) else GameTooltip:AddLine(r.parent.recipe.name or "?") end
+		GameTooltip:AddLine(ns.LearnLine(r.parent.recipe), 0.25, 1, 0.25, true)
+		GameTooltip:Show()
+		return
+	end
 	GameTooltip:AddLine(r.recipe.name or ns.ItemName(r.recipe.item))
 	if r.recipe.qty ~= 1 then GameTooltip:AddLine(string.format("Makes %g", r.recipe.qty), 0.7, 0.7, 0.7) end
 	for _, b in ipairs(ns.Breakdown(r.id)) do
@@ -115,11 +131,11 @@ local function Tooltip(row)
 	if r.sold then
 		GameTooltip:AddLine(string.format("Sold/day %.1f, from %d hours of scans", r.sold, ns.SoldBasis(r.recipe.item)), 0.6, 0.6, 0.6)
 	end
-	local why = ns.WhyNot(r)
-	if why then
-		GameTooltip:AddLine("Me dumb, me craft now: out, " .. why, 1, 0.5, 0.25, true)
-	else
-		GameTooltip:AddLine("Me dumb, me craft now: in", 0.25, 1, 0.25)
+	if r.perPoint then
+		GameTooltip:AddLine(string.format("Level up: %d crafts to %s, %d skill points, %s a point%s.", r.levelN, r.levelTo, r.levelPoints,
+			ns.Money(r.perPoint), r.recipePrice and r.recipePrice > 0 and (", the recipe's " .. ns.Money(r.recipePrice) .. " included") or ""),
+			r.perPoint >= 0 and 0.25 or 1, r.perPoint >= 0 and 1 or 0.5, 0.25, true)
+		GameTooltip:AddLine("Sales count as many as two days of the market take; the rest at the vendor's price.", 0.6, 0.6, 0.6, true)
 	end
 	if r.myCount then
 		GameTooltip:AddLine(string.format("You sold %d in the last 7 days, for %s", r.myCount, ns.Money(r.myMoney)), 0.25, 1, 0.25)
@@ -135,6 +151,9 @@ local function Tooltip(row)
 	for name in pairs(r.recipe.guild or {}) do table.insert(guild, name) end
 	table.sort(guild)
 	if #guild > 0 then GameTooltip:AddLine("In the guild: " .. table.concat(guild, ", "), 0.6, 0.6, 0.6, true) end
+	local guide = ns.ColourGuide(r.id, r.skill)
+	if guide then GameTooltip:AddLine(guide, 0.6, 0.6, 0.6, true) end
+	if not r.recipe.by[ns.MeKey()] then GameTooltip:AddLine("Not learned on this character: click for where to get it", 0.6, 0.6, 0.6, true) end
 	GameTooltip:Show()
 end
 
@@ -207,6 +226,20 @@ local function Dropdown(parent, width, options, current, choose)
 		end
 	end
 	return d
+end
+
+-- A checkbox with its label on the right.
+local function Checkbox(label, onClick)
+	local c = CreateFrame("CheckButton", nil, frame, "UICheckButtonTemplate")
+	c:SetSize(24, 24)
+	local text = c.text or c.Text or c:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+	text:ClearAllPoints()
+	text:SetPoint("LEFT", c, "RIGHT", 2, 0)
+	text:SetFontObject("GameFontHighlight")
+	text:SetText(label)
+	c.label = text
+	c:SetScript("OnClick", onClick)
+	return c
 end
 
 local function Build()
@@ -287,7 +320,7 @@ local function Build()
 	end)
 
 	frame.status = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-	frame.status:SetPoint("TOPRIGHT", -16, -66)
+	frame.status:SetPoint("TOPRIGHT", -16, -40)
 	frame.status:SetJustifyH("RIGHT")
 
 	local header = CreateFrame("Frame", nil, frame)
@@ -323,6 +356,11 @@ local function Build()
 		row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
 		row.cells = {}
 		for j = 1, MAX_COLUMNS do row.cells[j] = Text(row, "GameFontHighlightSmall", 0, 10) end
+		row.wide = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		row.wide:SetPoint("LEFT", 24, 0)
+		row.wide:SetPoint("RIGHT", -4, 0)
+		row.wide:SetJustifyH("LEFT")
+		row.wide:SetWordWrap(false)
 		row:SetScript("OnEnter", Tooltip)
 		row:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		-- Shift-click links the item in chat; right-click a recipe for the
@@ -330,13 +368,37 @@ local function Build()
 		row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 		row:SetScript("OnClick", function(self, mouse)
 			if mouse == "RightButton" then
-				if self.data and self.data.recipe and self.data.cost ~= nil then ns.ShopMenu(self, self.data) end
+				local d = self.data
+				if d and d.learn then
+					local item = ns.LearnInfo(d.parent.recipe).item
+					if item then ns.RecipeMenu(self, item) end
+				elseif d and d.recipe and d.cost ~= nil then
+					ns.ShopMenu(self, d)
+				end
 				return
 			end
-			local item = self.data and (self.data.item or self.data.recipe.item)
+			local data = self.data
+			-- The fold-out: shift-click links the recipe item.
+			if data and data.learn then
+				local info = ns.LearnInfo(data.parent.recipe)
+				if IsModifiedClick("CHATLINK") then
+					local link = ns.ItemLink(info.item)
+					if link then ChatEdit_InsertLink(link) end
+				else
+					ns.ShowItemRef(info.item)
+				end
+				return
+			end
+			local item = data and (data.item or data.recipe.item)
 			if item and IsModifiedClick("CHATLINK") then
-				local _, link = GetItemInfo(item)
+				local link = ns.ItemLink(item)
 				if link then ChatEdit_InsertLink(link) end
+				return
+			end
+			-- Not learned here: open or close where to get it.
+			if data and data.recipe and not data.recipe.by[ns.MeKey()] then
+				expanded[data.id] = not expanded[data.id] or nil
+				ns.Refresh()
 			end
 		end)
 		rows[i] = row
@@ -354,21 +416,62 @@ local function Build()
 	dText:ClearAllPoints()
 	dText:SetPoint("LEFT", d, "RIGHT", 2, 0)
 	dText:SetFontObject("GameFontNormal")
-	dText:SetText("Me dumb, me craft now")
+	dText:SetText("Level up")
 	d:SetScript("OnClick", function(self)
-		dumb = self:GetChecked() and true or false
+		levelUp = self:GetChecked() and true or false
+		if levelUp then sortKey, sortUp = "perPoint", false end
 		offset = 0
 		ns.Refresh()
 	end)
 	d:SetScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_BOTTOMRIGHT")
-		GameTooltip:AddLine("Me dumb, me craft now")
-		GameTooltip:AddLine(string.format("Only crafts that earn at least %s a day and actually sell, best first. Change the bar with /bok min 25s.",
-			ns.Money(ns.db.focusMin or DUMB_MIN)), 1, 1, 1, true)
+		GameTooltip:AddLine("Level up")
+		GameTooltip:AddLine("The crafts that raise this character's skill, the most gold per skill point first: those that pay for themselves on top, then the cheapest. Crafts: how many until the recipe turns green (or grey). With Can learn: recipes to buy too, their price included.", 1, 1, 1, true)
 		GameTooltip:Show()
 	end)
 	d:SetScript("OnLeave", function() GameTooltip:Hide() end)
-	frame.dumb = d
+	frame.levelBox = d
+
+	-- Search (Zach 9/11): a recipe by its name or a reagent's, and on the
+	-- Market tab an item by its name.
+	local search = CreateFrame("EditBox", nil, frame, HasTemplate("SearchBoxTemplate") and "SearchBoxTemplate" or "InputBoxTemplate")
+	search:SetSize(170, 20)
+	search:SetPoint("TOPLEFT", 300, -60)
+	search:SetAutoFocus(false)
+	search:HookScript("OnTextChanged", function(self)
+		local text = strtrim(self:GetText() or ""):lower()
+		if text == ns.search then return end
+		ns.search, offset = text, 0
+		ns.Refresh()
+	end)
+	frame.search = search
+
+	local function Learn(self)
+		if self == frame.canLearn then canLearn = self:GetChecked() and true or false else needSkill = self:GetChecked() and true or false end
+		-- Unlearned recipes are in All recipes; lowest skill first.
+		if (canLearn or needSkill) and mode == "mine" then mode = "all" end
+		if canLearn or needSkill then sortKey, sortUp = "skill", true end
+		offset = 0
+		ns.Refresh()
+	end
+	frame.canLearn = Checkbox("Can learn", Learn)
+	frame.canLearn:SetPoint("TOPLEFT", 478, -58)
+	frame.canLearn:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_BOTTOMRIGHT")
+		GameTooltip:AddLine("Can learn")
+		GameTooltip:AddLine("Recipes this character has not learned and has the skill for now, lowest skill first. Click one for where to get it.", 1, 1, 1, true)
+		GameTooltip:Show()
+	end)
+	frame.canLearn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	frame.needSkill = Checkbox("Need skill", Learn)
+	frame.needSkill:SetPoint("LEFT", frame.canLearn.label, "RIGHT", 10, 0)
+	frame.needSkill:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_BOTTOMRIGHT")
+		GameTooltip:AddLine("Need skill")
+		GameTooltip:AddLine("Recipes that need more skill than this character has, lowest first: what to aim for. ? means the skill is not known yet; visiting the trainer fills it in.", 1, 1, 1, true)
+		GameTooltip:Show()
+	end)
+	frame.needSkill:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
 	-- The side tabs, as the spellbook's on the right edge.
 	frame.tabs = {}
@@ -512,6 +615,15 @@ end
 -- key, header, width, sort field, what a row shows; default: shown at first.
 COLUMNS = {
 	{ key = "name", head = "Recipe", width = 190, sort = "name", fixed = true, show = function(r) return r.recipe.name or ns.ItemName(r.recipe.item) end },
+	-- The skill it needs (Zach 10/11), ? when not known yet.
+	-- Coloured as the recipe is for this character (Zach 10/11): orange,
+	-- yellow, green or grey once learned; red while the skill is too low;
+	-- white when learnable, as its colour shows only once learned.
+	-- Estimated colours (not seen at this skill) get a ~ (Zach 10/11).
+	{ key = "skill", head = "Skill", width = 40, sort = "skill", default = true, show = function(r)
+		local hex = SKILL_HEX[r.skillColour] or "ffffff"
+		return "|cff" .. hex .. (r.skillExact == false and "~" or "") .. (r.skill and tostring(r.skill) or "?") .. "|r"
+	end },
 	{ key = "cost", head = "Cost", width = 75, sort = "cost", default = true,
 		show = function(r) return r.cost and ns.Money(r.cost) or ("|cff808080no price: " .. ns.ItemName(r.missing) .. "|r") end },
 	{ key = "sells", head = "Sells", width = 75, sort = "sells", default = true, show = function(r) return Aged(r.sells, r.age) end },
@@ -531,6 +643,14 @@ COLUMNS = {
 		if r.rawWorth == nil then return "|cff808080-|r" end
 		return r.rawWorth and "|cff40ff40yes|r" or "|cffff8040no|r"
 	end },
+	-- Level up (Zach 10/11): gold per skill point, and crafts until the
+	-- colour changes.
+	{ key = "perPoint", head = "Per point", width = 70, sort = "perPoint", level = true,
+		show = function(r) return r.perPoint and Cell(r.perPoint, r.perPoint < 0) or "|cff808080-|r" end },
+	{ key = "levelN", head = "Crafts", width = 75, sort = "levelN", level = true,
+		show = function(r) return r.levelN and string.format("%d to %s", r.levelN, r.levelTo) or "|cff808080-|r" end },
+	-- The price's move (Zach 9/11): the last day against the two weeks before.
+	{ key = "trend", head = "Trend", width = 55, sort = "trend", show = function(r) return ns.TrendText(r.trend) end },
 }
 
 GATHER = {
@@ -545,8 +665,10 @@ GATHER = {
 -- The recipe columns he has ticked, in their fixed order.
 local function Picked(c)
 	local chosen = ns.db.columns
+	if c.level then return levelUp end
 	if c.fixed then return true end
-	if chosen then return chosen[c.key] == true end
+	-- A column added since he picked (Skill, 10/11) shows by its default.
+	if chosen and chosen[c.key] ~= nil then return chosen[c.key] == true end
 	return c.default == true
 end
 
@@ -564,7 +686,7 @@ function ns.ColumnMenu(owner)
 	MenuUtil.CreateContextMenu(owner, function(_, root)
 		root:CreateTitle("Columns")
 		for _, c in ipairs(COLUMNS) do
-			if not c.fixed then
+			if not c.fixed and not c.level then
 				root:CreateCheckbox(c.head, function() return Picked(c) end, function()
 					local chosen = ns.db.columns
 					if not chosen then
@@ -584,12 +706,25 @@ function ns.ColumnMenu(owner)
 	end)
 end
 
+-- The search box: the recipe's name, the made item's or a reagent's.
+local function Found(r)
+	local query = ns.search
+	if not query or query == "" then return true end
+	local function Has(name) return name and name:lower():find(query, 1, true) ~= nil end
+	if Has(r.recipe.name) or Has(ns.ItemName(r.recipe.item)) then return true end
+	for _, reagent in ipairs(r.recipe.reagents or {}) do
+		if Has(ns.ItemName(reagent[1])) then return true end
+	end
+	return false
+end
+
 -- Gathering: what each raw material or bar fetches, dearest first.
 local function RefreshGather()
 	Layout(GATHER)
 	list = {}
+	local query = ns.search
 	for _, r in ipairs(ns.GatherRows(profession)) do
-		if not sellable or r.price then table.insert(list, r) end
+		if (not sellable or r.price) and (not query or query == "" or ns.ItemName(r.item):lower():find(query, 1, true)) then table.insert(list, r) end
 	end
 	Sort(list)
 	offset = math.max(0, math.min(offset, #list - ROWS))
@@ -608,47 +743,142 @@ local function RefreshGather()
 	frame.note:SetText("Price per item on the auction house, before the 5% cut. A guide only: what gathering earns depends on how fast you gather.")
 end
 
+local Draw
+-- How long the last refresh took (Zach 10/11: a freeze on opening), for
+-- /bok test.
+-- Not learned on this character: learnable now, or more skill needed;
+-- and the colour of the skill for this character.
+local function Classify(r, me, skills)
+	-- Rows are kept between refreshes; work these out afresh.
+	r.skill, r.learnable, r.needs = ns.LearnInfo(r.recipe).skill, nil, nil
+	r.have = skills[r.recipe.profession]
+	local mine = r.recipe.by[me]
+	if mine then
+		r.skillColour, r.skillExact = mine, true
+	elseif r.skill and not r.have then
+		r.skillColour, r.skillExact = "r", true
+	else
+		r.skillColour, r.skillExact = ns.SkillColour(r.id, r.skill, r.have)
+	end
+	if not mine then
+		if r.have and r.skill and r.skill <= r.have then r.learnable = true else r.needs = true end
+	end
+	r.perPoint, r.levelN, r.levelTo, r.levelPoints, r.recipePrice = nil, nil, nil, nil, nil
+	if levelUp then ns.LevelPlan(r, mine) end
+end
+
+-- The boxes and filters above the list, the learn boxes aside.
+local function Passes(r)
+	-- Skill-ups: his own recipes that are not grey.
+	-- Level up: what this character can craft for skill, or learn now
+	-- with Can learn.
+	local level = not levelUp or (r.perPoint ~= nil and (r.recipe.by[ns.MeKey()] or (canLearn and r.learnable)))
+	-- Skill-ups by this character's colour, estimated for recipes not
+	-- learned (Zach 10/11: with Can learn it showed nothing).
+	local up = r.skillColour == "o" or r.skillColour == "y" or r.skillColour == "g"
+	return (not skillUps or up) and (not sellable or r.sells) and level and Found(r)
+end
+
+Counts = function(recipeRows, me, skills)
+	local can, need = 0, 0
+	for _, r in ipairs(recipeRows) do
+		Classify(r, me, skills)
+		if Passes(r) then
+			if r.learnable then can = can + 1 end
+			if r.needs then need = need + 1 end
+		end
+	end
+	frame.canLearn.label:SetText(string.format("Can learn (%d)", can))
+	frame.needSkill.label:SetText(string.format("Need skill (%d)", need))
+end
+
 function ns.Refresh()
 	if not frame or not frame:IsShown() then return end
+	local start = debugprofilestop()
+	Draw()
+	ns.refreshMs = debugprofilestop() - start
+	ns.refreshWhat = page .. "/" .. mode
+end
+
+Draw = function()
 	frame.view:Update()
 	frame.pick:Update()
 	for _, tab in ipairs(frame.tabs) do tab:SetChecked(tab.page == page) end
 	local other = page ~= "recipes"
 	ns.ShowHistory(frame, page == "history")
 	ns.ShowWork(frame, page == "work")
+	ns.ShowMarket(frame, page == "market")
+	ns.ShowToday(frame, page == "today")
+	frame.search:SetShown(page == "recipes" or page == "market")
 	frame.header:SetShown(not other)
 	frame.view:SetShown(not other)
 	frame.pick:SetShown(not other)
 	frame.sell:SetShown(not other)
+	frame.canLearn:SetShown(not other and mode ~= "gather")
+	frame.needSkill:SetShown(not other and mode ~= "gather")
+	for _, row in ipairs(rows) do row.wide:Hide() end
 	if other then
 		frame.ups:Hide()
-		frame.dumb:Hide()
+		frame.levelBox:Hide()
 		for _, row in ipairs(rows) do row:Hide() end
-		if page == "history" then ns.RefreshHistory(frame) else ns.RefreshWork(frame) end
+		if page == "history" then ns.RefreshHistory(frame)
+		elseif page == "market" then ns.RefreshMarket(frame)
+		elseif page == "today" then ns.RefreshToday(frame)
+		else ns.RefreshWork(frame) end
 		return
 	end
 	if mode == "gather" then
 		frame.ups:Hide()
-		frame.dumb:Hide()
+		frame.levelBox:Hide()
 		RefreshGather()
 		return
 	end
 	frame.ups:Show()
-	frame.dumb:Show()
+	frame.levelBox:Show()
 	local cols = Shown()
 	Layout(cols)
 	list = {}
-	for _, r in ipairs(ns.Rows(profession, mode == "all")) do
-		-- Skill-ups: his own recipes that are not grey.
-		local worth = not dumb or not ns.WhyNot(r)
-		if (not skillUps or (r.colour ~= "x" and r.colour ~= "w")) and (not sellable or r.sells) and worth then table.insert(list, r) end
+	local me, skills = ns.MeKey(), ns.MySkills()
+	local recipeRows = ns.Rows(profession, mode == "all")
+	for _, r in ipairs(recipeRows) do
+		Classify(r, me, skills)
+		if Passes(r) and (not (canLearn or needSkill) or (canLearn and r.learnable) or (needSkill and r.needs)) then
+			r.trend = ns.Trend(r.recipe.item)
+			table.insert(list, r)
+		end
+	end
+	frame.canLearn:SetChecked(canLearn)
+	frame.needSkill:SetChecked(needSkill)
+	-- The counts are of all recipes, whichever view is shown (Zach 10/11:
+	-- My recipes showed 0 until a box was ticked); worked out a moment
+	-- later there, so the window opens first.
+	if mode == "all" then
+		Counts(recipeRows, me, skills)
+	else
+		local wanted = profession
+		C_Timer.After(0.05, function()
+			if not frame:IsShown() or mode ~= "mine" or profession ~= wanted then return end
+			Counts(ns.Rows(wanted, true), me, skills)
+		end)
 	end
 	Sort(list)
+	-- The fold-outs under the recipes clicked open.
+	local shown = {}
+	for _, r in ipairs(list) do
+		table.insert(shown, r)
+		if expanded[r.id] and not r.recipe.by[me] then table.insert(shown, { learn = true, parent = r }) end
+	end
+	list = shown
 	offset = math.max(0, math.min(offset, #list - ROWS))
 	for i, row in ipairs(rows) do
 		local r = list[i + offset]
 		row.data = r
-		if r then
+		if r and r.learn then
+			for _, cell in ipairs(row.cells) do cell:Hide() end
+			row.wide:SetText("|cff40ff40" .. ns.LearnLine(r.parent.recipe) .. "|r")
+			row.wide:Show()
+			row:Show()
+		elseif r then
 			local c = COLOURS[r.colour] or COLOURS.x
 			row.cells[1]:SetTextColor(c[1], c[2], c[3])
 			for j, col in ipairs(cols) do row.cells[j]:SetText(col.show(r)) end
@@ -659,12 +889,17 @@ function ns.Refresh()
 	end
 	local auctionator = Auctionator and Auctionator.API and Auctionator.API.v1
 	frame.status:SetText(auctionator and string.format("%d recipes", #list) or "|cffff4040Auctionator not found|r")
+	if canLearn or needSkill then
+		frame.note:SetText("Not learned on this character. Skill: what the recipe needs, ? until known (a trainer visit fills it in). Click a recipe for where to get it.")
+		return
+	end
 	frame.note:SetText(#list == 0 and (mode == "all" and "No recipes: none of yours, and none shared by the guild through Skatteverket."
 		or "No recipes yet: open each profession window once on each character.")
 		or "Sells: after the 5% cut, orange if the price is over 2 days old. For sale: red under 5, green none. Profit/day: profit x sold a day, from two scans hours apart. White: you don't know it. Right-click to buy.")
 end
 
 function ns.Toggle(only)
+	if ns.Allowed and not ns.Allowed() then return end
 	if not frame then Build() end
 	if frame:IsShown() and not only then
 		frame:Hide()
@@ -694,7 +929,7 @@ BokforingAPI = {
 local button
 function ns.ShowButton()
 	local parent = ProfessionsFrame or TradeSkillFrame
-	if button or not parent then return end
+	if button or not parent or (ns.Allowed and not ns.Allowed()) then return end
 	button = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
 	button:SetSize(90, 22)
 	button:SetPoint("BOTTOMRIGHT", parent, "TOPRIGHT", 0, 2)
@@ -702,4 +937,10 @@ function ns.ShowButton()
 	button:SetScript("OnClick", function()
 		if frame and frame:IsShown() then frame:Hide() else ns.Toggle(ns.openProfession) end
 	end)
+end
+
+-- Off outside THÖNDERSTÖRM (Guild.lua).
+function ns.Hide()
+	if frame then frame:Hide() end
+	if button then button:Hide() end
 end

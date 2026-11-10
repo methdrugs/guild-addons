@@ -11,14 +11,14 @@ local ROWS, W = 12, 900
 local TABS = { "Applications", "Loans", "History" }
 local SIDE_TABS = { { "INV_Scroll_03", "Ansökningar" }, { "INV_Misc_Coin_02", "Lån" }, { "INV_Misc_Book_09", "Historik" } }
 local COLS = {
-	Applications = { { "Ansökt", 70 }, { "Låntagare", 120 }, { "Belopp", 100 }, { "Betala senast", 85 }, { "Anledning", 460 } },
+	Applications = { { "Ansökt", 60 }, { "Låntagare", 120 }, { "Belopp", 90 }, { "Önskad ränta", 85 }, { "Önskar betala", 85 }, { "Läge", 190 }, { "Anledning", 270 } },
 	Loans = { { "Låntagare", 120 }, { "Belopp", 95 }, { "Ränta/v", 55 }, { "Skickat", 75 }, { "Dagar", 45 }, { "Räntor", 95 }, { "Återbetalt", 95 }, { "Att betala", 100 }, { "Betala senast", 85 } },
 	History = { { "Låntagare", 120 }, { "Belopp", 95 }, { "Status", 90 }, { "Ansökt", 65 }, { "Avslutat", 65 }, { "Återbetalt", 95 }, { "Anledning", 305 } },
 }
 local IN_TAB = {
-	Applications = { pending = true },
+	Applications = { pending = true, offered = true, accepted = true },
 	Loans = { approved = true },
-	History = { declined = true, repaid = true },
+	History = { declined = true, repaid = true, refused = true, expired = true },
 }
 
 local frame, list
@@ -46,6 +46,12 @@ function ns.OnBankerMessage(sender, msg)
 		for _, loan in pairs(Loans()) do
 			if loan.borrower == sender then SendUpdate(loan, true) end
 		end
+		for id, who in pairs(ns.db.removed or {}) do
+			if who == sender then
+				ns.Whisper(sender, "UPD;" .. id .. ";removed;0;0;0;0;0;0;0;0;0;0")
+				ns.db.removed[id] = nil
+			end
+		end
 		ns.Whisper(sender, "END")
 		return
 	end
@@ -53,14 +59,35 @@ function ns.OnBankerMessage(sender, msg)
 		ns.OnBankPayment(sender, msg)
 		return
 	end
-	local id, amount, repayBy, appliedAt, reason = msg:match("^APP;([^;]+);(%d+);(%d+);(%d+);(.*)$")
+	-- An answer to an offer (Zach 10/11): accepted comes back to be
+	-- confirmed, refused ends the application.
+	local answerId, answer = msg:match("^ANS;([^;]+);([01])$")
+	if answerId then
+		local loan = Loans()[answerId]
+		if loan and loan.borrower == sender and loan.status == "offered" then
+			if answer == "1" then
+				loan.status = "accepted"
+				ns.Print(string.format("%s accepterar %g %% ränta på lånet om %s. Bekräfta under Swedbank, Ansökningar.", sender, loan.rate * 100, ns.Money(loan.amount)))
+			else
+				loan.status, loan.closedAt = "refused", time()
+				ns.Print(string.format("%s avböjer erbjudandet; ansökan om %s är avslutad.", sender, ns.Money(loan.amount)))
+			end
+		end
+		if loan then SendUpdate(loan, true) end
+		ns.RefreshBanker()
+		return
+	end
+	local id, amount, repayBy, appliedAt, wish, reason = msg:match("^AP2;([^;]+);(%d+);(%d+);(%d+);(%d+);(.*)$")
+	if not id then
+		id, amount, repayBy, appliedAt, reason = msg:match("^APP;([^;]+);(%d+);(%d+);(%d+);(.*)$")
+	end
 	if not id or ns.Online(sender) == nil then return end
 	local loan = Loans()[id]
 	if not loan then
 		loan = {
 			id = id, borrower = sender, amount = tonumber(amount), repayBy = tonumber(repayBy),
 			appliedAt = tonumber(appliedAt), receivedAt = time(), reason = ns.Trim(reason, ns.REASON_BYTES),
-			status = "pending", payments = {},
+			status = "pending", payments = {}, wishRate = wish and tonumber(wish) / 10000 or nil,
 		}
 		Loans()[id] = loan
 		ns.Print(string.format("ny låneansökan från %s på %s. Öppna /swedbank.", sender, ns.Money(loan.amount)))
@@ -70,8 +97,47 @@ function ns.OnBankerMessage(sender, msg)
 	ns.RefreshBanker()
 end
 
+-- For the THÖNDERSTÖRM bolt (Zach 10/11): applications waiting and loans
+-- overdue, for the leader only.
+-- An offer not answered in three days runs out and ends the application
+-- (Zach 10/11).
+local OFFER_DAYS = 3
+local function ExpireOffers()
+	for _, loan in pairs(Loans()) do
+		if loan.status == "offered" and time() - (loan.offeredAt or time()) > OFFER_DAYS * 86400 then
+			loan.status, loan.closedAt = "expired", time()
+			ns.Print(string.format("erbjudandet till %s om %s gick ut efter %d dagar utan svar.", loan.borrower, ns.Money(loan.amount), OFFER_DAYS))
+			SendUpdate(loan)
+		end
+	end
+end
+
+-- What someone still owes on loans, for Skatteverket's note when they
+-- leave the guild (Zach 10/11); the leader only.
+function ns.OwedBy(name)
+	if not IsGuildLeader() or not ns.db or not ns.db.loans then return 0 end
+	local total = 0
+	for _, loan in pairs(Loans()) do
+		if loan.borrower == name and loan.status == "approved" then total = total + select(3, ns.Due(loan)) end
+	end
+	return total
+end
+
+function ns.LeaderTodo()
+	if not IsGuildLeader() or not ns.db or not ns.db.loans then return 0, 0, 0 end
+	local pending, overdue = 0, 0
+	for _, loan in pairs(Loans()) do
+		-- New, or an offer accepted that waits for his confirmation.
+		if loan.status == "pending" or loan.status == "accepted" then pending = pending + 1 end
+		if Overdue(loan) then overdue = overdue + 1 end
+	end
+	return pending, overdue, ns.LedgerNet()
+end
+
 function ns.OnBankerLogin()
 	if not IsGuildLeader() then return end
+	ExpireOffers()
+	C_Timer.NewTicker(600, ExpireOffers)
 	local pending, overdue = 0, 0
 	for _, loan in pairs(Loans()) do
 		if loan.status == "pending" then pending = pending + 1 end
@@ -93,8 +159,11 @@ local function FillMail(loan)
 	SendMailNameEditBox:SetText(loan.borrower)
 	SendMailSubjectEditBox:SetText("Swedbank: lån")
 	if SendMailBodyEditBox then
-		SendMailBodyEditBox:SetText(string.format("Lån på %s med %g %% ränta i veckan%s. Räntan räknas från i dag.",
-			ns.Money(loan.amount), loan.rate * 100, (loan.repayBy or 0) > 0 and (", betala senast " .. ns.Day(loan.repayBy)) or ""))
+		-- The rules in the mail itself (Zach 10/11).
+		local start = ns.InterestStart(time())
+		SendMailBodyEditBox:SetText(string.format("Lån på %s. Ränta: %g %% per påbörjad vecka på det som är kvar av lånet. Räntan börjar räknas i morgon (%s): då läggs första veckans %g %% på, och sedan igen varje ny vecka (%s, %s ...). Betalar du i dag kostar det ingen ränta. Betalningar går först till räntan, sedan till lånet.%s Se lånet under Swedbank, Mina lån.",
+			ns.Money(loan.amount), loan.rate * 100, ns.Day(start), loan.rate * 100, ns.Day(start + ns.WEEK), ns.Day(start + 2 * ns.WEEK),
+			(loan.repayBy or 0) > 0 and (" Betala senast " .. ns.Day(loan.repayBy) .. ".") or ""))
 	end
 	if SendMailSendMoneyButton and not SendMailSendMoneyButton:GetChecked() then SendMailSendMoneyButton:Click() end
 	if MoneyInputFrame_SetCopper and SendMailMoney then MoneyInputFrame_SetCopper(SendMailMoney, loan.amount) end
@@ -112,6 +181,72 @@ hooksecurefunc("SendMail", function(recipient)
 	end
 end)
 
+-- The guild bank's money, the leader's bags in between (Zach 10/11): a
+-- loan is the guild bank's, but he mails it from his own gold when no
+-- bank is near, so the bank owes him that much; a repayment mailed to him
+-- is the bank's, so he owes the bank. At the next guild bank visit the
+-- difference moves by itself, with a chat line: out to him, or in to the
+-- bank. If the game blocks it, the to-do on the bolt stays and he moves it
+-- by hand (/swedbank kvitt clears it after that).
+local function Ledger()
+	ns.db.ledger = ns.db.ledger or { toMe = 0, toBank = 0 }
+	return ns.db.ledger
+end
+
+-- What the guild bank owes him (positive) or he owes it (negative).
+function ns.LedgerNet()
+	local l = Ledger()
+	return l.toMe - l.toBank
+end
+
+local settling
+local function SettleBank()
+	if not IsGuildLeader() or settling then return end
+	local net = ns.LedgerNet()
+	if net > 0 then
+		local take = math.min(net, GetGuildBankMoney and GetGuildBankMoney() or 0)
+		if take <= 0 then
+			ns.Print(string.format("guildbanken är skyldig dig %s för lån du skickat, men har inget guld just nu.", ns.Money(net)))
+			return
+		end
+		settling = { out = true, amount = take, before = GetMoney(), at = GetTime() }
+		WithdrawGuildBankMoney(take)
+	elseif net < 0 then
+		local give = math.min(-net, GetMoney())
+		if give <= 0 then return end
+		settling = { out = false, amount = give, before = GetMoney(), at = GetTime() }
+		DepositGuildBankMoney(give)
+	end
+end
+
+-- The move counts once his gold has changed by the amount.
+local function Settled()
+	if not settling then return end
+	local change = GetMoney() - settling.before
+	local l = Ledger()
+	if settling.out and change >= settling.amount then
+		l.toMe = l.toMe - settling.amount
+		ns.Print(string.format("tog ut %s ur guildbanken: ditt utlägg för lån är tillbaka.", ns.Money(settling.amount)))
+		settling = nil
+	elseif not settling.out and -change >= settling.amount then
+		l.toBank = l.toBank - settling.amount
+		ns.Print(string.format("satte in %s i guildbanken: lånebetalningar du fått.", ns.Money(settling.amount)))
+		settling = nil
+	elseif GetTime() - settling.at > 15 then
+		settling = nil
+	end
+	-- Both owed at once nets out.
+	local both = math.min(l.toMe, l.toBank)
+	if both > 0 then l.toMe, l.toBank = l.toMe - both, l.toBank - both end
+	if SkatteverketAPI and SkatteverketAPI.RefreshTodo then SkatteverketAPI.RefreshTodo() end
+end
+
+function ns.ClearLedger()
+	ns.db.ledger = { toMe = 0, toBank = 0 }
+	ns.Print("utlägg och inbetalningar till guildbanken är nollställda.")
+	if SkatteverketAPI and SkatteverketAPI.RefreshTodo then SkatteverketAPI.RefreshTodo() end
+end
+
 local function MarkSent(loan, money)
 	if loan.sentAt then return end
 	loan.sentAt = time()
@@ -119,7 +254,10 @@ local function MarkSent(loan, money)
 		ns.Print(string.format("brevet innehöll %s, inte %s; lånet räknas nu på %s.", ns.Money(money), ns.Money(loan.amount), ns.Money(money)))
 		loan.amount = money
 	end
-	ns.Print("lånet till " .. loan.borrower .. " är markerat som skickat; räntan räknas från nu.")
+	ns.Print("lånet till " .. loan.borrower .. " är markerat som skickat; räntan börjar räknas i morgon.")
+	-- From his own gold: the guild bank owes him this until his next visit.
+	Ledger().toMe = Ledger().toMe + loan.amount
+	ns.Print(string.format("guildbanken är skyldig dig %s; det tas ut automatiskt nästa gång du öppnar guildbanken.", ns.Money(loan.amount)))
 	SendUpdate(loan)
 end
 
@@ -151,6 +289,11 @@ local function AddPayment(loan, amount, t, via)
 				return
 			end
 		end
+	end
+	-- Paid to him, not into the bank: the bank's money, moved in at his next visit.
+	if not unverified then
+		Ledger().toBank = Ledger().toBank + amount
+		ns.Print(string.format("%s sätts in i guildbanken automatiskt nästa gång du öppnar den.", ns.Money(amount)))
 	end
 	table.insert(loan.payments, { t = t or time(), amount = amount, via = via, verified = not unverified })
 	table.sort(loan.payments, function(a, b) return a.t < b.t end)
@@ -303,12 +446,49 @@ function ns.OnBankerEvent(event, ...)
 		or (event == "PLAYER_INTERACTION_MANAGER_FRAME_SHOW" and Enum and Enum.PlayerInteractionType
 			and ... == Enum.PlayerInteractionType.GuildBanker)) then
 		QueryGuildBankLog((MAX_GUILDBANK_TABS or 6) + 1)
+		-- After Skatteverket's own deposit, and once the bank's gold is known.
+		C_Timer.After(4, SettleBank)
+	elseif event == "PLAYER_MONEY" then
+		Settled()
+	elseif (event == "ADDON_ACTION_BLOCKED" or event == "ADDON_ACTION_FORBIDDEN") and ... == "Swedbank" and settling then
+		ns.Print(string.format("spelet tillåter inte att Swedbank flyttar guldet. %s %s själv, och skriv sedan /swedbank kvitt.",
+			settling.out and "Ta ut" or "Sätt in", ns.Money(settling.amount)))
+		settling = nil
 	elseif event == "GUILDBANKLOG_UPDATE" and IsGuildLeader() then
 		ReadBankLog()
 		VerifyFromLog()
 		NoticeUnlogged()
 	end
 	ns.RefreshBanker()
+end
+
+-- Remove a loan or an application altogether (Zach 10/11: to redo
+-- Tungan's), after a yes. The borrower's copy goes too. A loan already
+-- sent leaves the guild bank's ledger as it is.
+StaticPopupDialogs.SWEDBANK_REMOVE = {
+	text = "Ta bort lånet till %s på %s helt?\n\nDet försvinner för er båda och går inte att ångra.",
+	button1 = YES,
+	button2 = NO,
+	timeout = 0,
+	whileDead = true,
+	hideOnEscape = true,
+	OnAccept = function(_, id)
+		local loan = id and ns.db.loans[id]
+		if not loan then return end
+		loan.status = "removed"
+		SendUpdate(loan)
+		ns.db.loans[id] = nil
+		-- Told again when the borrower next asks for their loans.
+		ns.db.removed = ns.db.removed or {}
+		ns.db.removed[id] = loan.borrower
+		ns.Print("lånet till " .. loan.borrower .. " på " .. ns.Money(loan.amount) .. " är borttaget.")
+		ns.RefreshBanker()
+	end,
+}
+
+local function Remove(loan)
+	if not loan then return end
+	StaticPopup_Show("SWEDBANK_REMOVE", loan.borrower, ns.Money(loan.amount), loan.id)
 end
 
 local function Selected()
@@ -361,7 +541,12 @@ end
 local function Values(loan)
 	local paid = ns.PaidBack(loan)
 	if tab == "Applications" then
-		return { ns.Day(loan.appliedAt), loan.borrower, ns.Money(loan.amount), ns.Day(loan.repayBy), Warning(loan) .. loan.reason }
+		local stage = loan.status == "offered" and string.format("|cff808080erbjudit %g %%, väntar på svar|r", loan.rate * 100)
+			or loan.status == "accepted" and string.format("|cff40ff40accepterat %g %%: bekräfta|r", loan.rate * 100)
+			or "|cffffd100ny|r"
+		return { ns.Day(loan.appliedAt), loan.borrower, ns.Money(loan.amount),
+			loan.wishRate and string.format("%g %%", loan.wishRate * 100) or "-",
+			ns.Day(loan.status == "pending" and loan.repayBy or loan.wish), stage, Warning(loan) .. loan.reason }
 	elseif tab == "Loans" then
 		local _, _, due = ns.Due(loan)
 		local repayBy = ns.Day(loan.repayBy)
@@ -373,14 +558,16 @@ local function Values(loan)
 			ns.Money(paid + due - loan.amount), ns.Money(paid), ns.Money(due), repayBy,
 		}
 	end
-	local status = loan.status == "repaid" and "|cff40ff40Återbetalt|r" or "|cffff4040Nekat|r"
+	local status = loan.status == "repaid" and "|cff40ff40Återbetalt|r" or loan.status == "refused" and "|cffff8040Avböjt erbjudande|r"
+		or loan.status == "expired" and "|cff808080Erbjudandet gick ut|r" or "|cffff4040Nekat|r"
 	return { loan.borrower, ns.Money(loan.amount), status, ns.Day(loan.appliedAt), ns.Day(loan.closedAt), ns.Money(paid), loan.reason }
 end
 
 local function Detail(loan)
 	local dates = string.format("%s, %s. Ansökt %s, godkänt %s, skickat %s, avslutat %s.", loan.borrower, ns.Money(loan.amount),
 		ns.Day(loan.appliedAt), ns.Day(loan.approvedAt), ns.Day(loan.sentAt), ns.Day(loan.closedAt))
-	if loan.rate then dates = dates .. string.format(" Ränta %g %% i veckan.", loan.rate * 100) end
+	if loan.rate then dates = dates .. string.format(" Ränta %g %% per påbörjad vecka från dagen efter utbetalningen.", loan.rate * 100) end
+	if loan.wish and loan.wish > 0 and loan.wish ~= loan.repayBy then dates = dates .. " Önskat betaldatum " .. ns.Day(loan.wish) .. "." end
 	local payments = {}
 	for _, p in ipairs(loan.payments or {}) do
 		table.insert(payments, ns.Day(p.t) .. " " .. ns.Money(p.amount) .. (p.via == "bank" and " (guildbanken)" or "")
@@ -432,17 +619,44 @@ function ns.BuildBanker(page, panel)
 	apps.rate = ns.Input(apps, 40)
 	apps.rate:SetPoint("LEFT", 100, 0)
 	apps.rate:SetText("5")
-	local approve = ns.Button(apps, "Godkänn", 100, function()
-		local loan, percent = Selected(), tonumber((apps.rate:GetText():gsub(",", ".")))
+	-- The last day is the leader's (Zach 10/11): today + 8 days filled in,
+	-- the borrower's own date only a wish, shown in the list.
+	local repayLabel = ns.Text(apps, "GameFontNormalSmall", "LEFT", apps.rate, "RIGHT", 12, 0)
+	repayLabel:SetText("Betala senast")
+	apps.repay = ns.Input(apps, 50)
+	apps.repay:SetPoint("LEFT", repayLabel, "RIGHT", 6, 0)
+	apps.repay:SetText(date("%d/%m", time() + 8 * 86400))
+	-- One button (Zach 10/11): the wished rate or lower approves at once; a
+	-- higher rate goes to the member as an offer; an accepted offer is
+	-- confirmed here.
+	local approve = ns.Button(apps, "Godkänn / erbjud", 130, function()
+		local loan = Selected()
 		if not loan then return end
-		if not percent or percent < 0 then ns.Print("skriv veckoräntan, till exempel 5.") return end
-		loan.status, loan.rate, loan.approvedAt = "approved", percent / 100, time()
-		ns.Print(string.format("lån på %s till %s godkänt med %g %% ränta i veckan.", ns.Money(loan.amount), loan.borrower, percent))
+		if loan.status == "offered" then ns.Print("erbjudandet väntar på svar från " .. loan.borrower .. ".") return end
+		if loan.status == "pending" then
+			local percent = tonumber((apps.rate:GetText():gsub(",", ".")))
+			if not percent or percent < 0 then ns.Print("skriv veckoräntan, till exempel 5.") return end
+			local repayBy = ns.ParseDate(apps.repay:GetText())
+			if not repayBy then ns.Print("skriv sista betaldag som dd/mm, till exempel " .. date("%d/%m", time() + 8 * 86400) .. ".") return end
+			loan.wish = loan.wish or loan.repayBy
+			loan.rate, loan.repayBy = percent / 100, repayBy
+			apps.repay:SetText(date("%d/%m", time() + 8 * 86400))
+			if loan.wishRate and loan.rate > loan.wishRate + 1e-9 then
+				loan.status, loan.offeredAt = "offered", time()
+				ns.Print(string.format("erbjudande till %s: %g %% ränta per påbörjad vecka (önskat %g %%), betala senast %s. Väntar på svar.",
+					loan.borrower, percent, loan.wishRate * 100, ns.Day(repayBy)))
+				SendUpdate(loan, true)
+				ns.RefreshBanker()
+				return
+			end
+		end
+		loan.status, loan.approvedAt = "approved", time()
+		ns.Print(string.format("lån på %s till %s godkänt med %g %% ränta per påbörjad vecka, betala senast %s.", ns.Money(loan.amount), loan.borrower, loan.rate * 100, ns.Day(loan.repayBy)))
 		SendUpdate(loan)
 		FillMail(loan)
 		ns.RefreshBanker()
 	end)
-	approve:SetPoint("LEFT", apps.rate, "RIGHT", 10, 0)
+	approve:SetPoint("LEFT", apps.repay, "RIGHT", 10, 0)
 	local decline = ns.Button(apps, "Neka", 100, function()
 		local loan = Selected()
 		if not loan then return end
@@ -452,6 +666,8 @@ function ns.BuildBanker(page, panel)
 		ns.RefreshBanker()
 	end)
 	decline:SetPoint("LEFT", approve, "RIGHT", 8, 0)
+	local removeApp = ns.Button(apps, "Ta bort", 90, function() Remove(Selected()) end)
+	removeApp:SetPoint("LEFT", decline, "RIGHT", 8, 0)
 
 	-- Loans: Fill mail, Mark sent, a payment, Mark repaid.
 	local loans = CreateFrame("Frame", nil, main)
@@ -486,6 +702,8 @@ function ns.BuildBanker(page, panel)
 		if loan then MarkRepaid(loan) ns.RefreshBanker() end
 	end)
 	repaid:SetPoint("LEFT", add, "RIGHT", 24, 0)
+	local removeLoan = ns.Button(loans, "Ta bort lån", 100, function() Remove(Selected()) end)
+	removeLoan:SetPoint("LEFT", repaid, "RIGHT", 8, 0)
 
 	-- Second line: reported guild bank payments that the bank log has not confirmed.
 	local review = CreateFrame("Frame", nil, loans)
@@ -502,6 +720,23 @@ function ns.BuildBanker(page, panel)
 	end)
 	reject:SetPoint("LEFT", accept, "RIGHT", 8, 0)
 	ns.Text(review, "GameFontDisableSmall", "LEFT", reject, "RIGHT", 12, 0):SetText("för betalningar som bankloggen inte har bekräftat")
+	-- A new last day for a running loan (Zach 10/11).
+	local move = ns.Button(review, "Ändra sista dag", 130, function()
+		local loan = Selected()
+		if not loan then return end
+		local repayBy = ns.ParseDate(review.repay:GetText())
+		if not repayBy then ns.Print("skriv den nya sista dagen som dd/mm.") return end
+		loan.repayBy = repayBy
+		ns.Print(string.format("lånet till %s ska nu betalas senast %s.", loan.borrower, ns.Day(repayBy)))
+		review.repay:SetText("")
+		review.repay:ClearFocus()
+		SendUpdate(loan)
+		ns.RefreshBanker()
+	end)
+	move:SetPoint("RIGHT", 0, 0)
+	review.repay = ns.Input(review, 50)
+	review.repay:SetPoint("RIGHT", move, "LEFT", -8, 0)
+	ns.Text(review, "GameFontNormalSmall", "RIGHT", review.repay, "LEFT", -6, 0):SetText("Ny sista dag")
 	frame.controls = { Applications = apps, Loans = loans }
 
 	frame.sideTabs = ns.SideTabs(frame, panel, SIDE_TABS, function(i)
@@ -530,6 +765,8 @@ function ns.ShowBanker(shown)
 end
 
 function ns.RefreshBanker()
+	-- The bolt's to-do badge follows every change to the loans.
+	if SkatteverketAPI and SkatteverketAPI.RefreshTodo then SkatteverketAPI.RefreshTodo() end
 	if not frame or not frame:IsShown() then return end
 	for i, name in ipairs(TABS) do
 		if name == tab then
@@ -551,6 +788,12 @@ function ns.RefreshBanker()
 		end
 	end
 	frame.summary:SetText(string.format("%d ansökningar, %d lån igång, %s skyldigt guildet, %d försenade.", pending, active, ns.Money(out), overdue))
+	-- The rate filled in from the member's wish when an application is picked.
+	local picked = tab == "Applications" and selected[tab] and Loans()[selected[tab]]
+	if picked and picked.id ~= frame.lastPicked then
+		frame.lastPicked = picked.id
+		if picked.status == "pending" and picked.wishRate then frame.controls.Applications.rate:SetText(string.format("%g", picked.wishRate * 100)) end
+	end
 
 	list:SetColumns(COLS[tab])
 	local rows = Rows()

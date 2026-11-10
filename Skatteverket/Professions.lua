@@ -4,8 +4,10 @@
 -- Professions are not secret, so they go over the guild channel.
 --
 -- Guild channel:
---   Y;number;main;interests;professions   a member's registration
---   Z;name,number,main,interests,professions,time;...   leader: those offline
+--   Y;number;main;interests;professions;race   a member's registration
+--   Z;name,number,main,interests,professions,time,race;...   leader: those offline
+-- Race since 0.27, for the leader's Lämnat tab (Zach 10/11); older clients
+-- send none.
 -- Whispers:
 --   G          member -> leader: give me a skattenummer
 --   N;number   leader -> member: your skattenummer
@@ -148,7 +150,7 @@ function ns.SendProfile()
 	local me = ns.Me()
 	if not reg or not me or not ns.InOurGuild() then profileDirty = true return end
 	local profs = ns.EncodeProfessions(ns.ReadProfessions())
-	ns.Send(string.format("Y;%d;%d;%s;%s", reg.number or 0, reg.main and 1 or 0, reg.interests or "", profs))
+	ns.Send(string.format("Y;%d;%d;%s;%s;%s", reg.number or 0, reg.main and 1 or 0, reg.interests or "", profs, UnitRace("player") or ""))
 	lastSent, profileDirty = profs, false
 	ns.SetProfile(me, reg.number, reg.main, reg.interests, profs, time())
 	-- Professions, recipes and the skattenummer can each earn one.
@@ -197,6 +199,18 @@ function ns.CitizenStatus(name, ranks, citizen)
 	local rank = ranks[name]
 	if rank and rank > citizen then return "promote" end
 	return "ok"
+end
+
+-- Everyone signed but still below Medborgare, for the leader's to-do.
+function ns.ToPromote()
+	local citizen, out = ns.CitizenRankIndex(), {}
+	if not citizen or not IsGuildLeader() then return out end
+	local ranks = ns.RosterRanks()
+	for name in pairs(ns.db.members) do
+		if ranks[name] and ns.CitizenStatus(name, ranks, citizen) == "promote" then table.insert(out, name) end
+	end
+	table.sort(out)
+	return out
 end
 
 -- Leader, from the Ge Medborgare button (a click, Zach 7/11): give a
@@ -265,15 +279,18 @@ end
 function ns.OnProfile(sender, parts)
 	if sender == ns.Me() then return end
 	ns.SetProfile(sender, tonumber(parts[2]), parts[3] == "1", parts[4], parts[5], time())
+	local m = ns.db.members[sender]
+	if m and parts[6] and parts[6] ~= "" then m.race = parts[6] end
 end
 
 function ns.OnProfileBoard(parts)
 	local me = ns.Me()
 	for i = 2, #parts do
-		local name, number, main, interests, profs, t = strsplit(",", parts[i])
+		local name, number, main, interests, profs, t, race = strsplit(",", parts[i])
 		t = tonumber(t)
 		if name and t and name ~= me then
 			ns.SetProfile(name, tonumber(number), main == "1", interests, profs, t)
+			if race and race ~= "" and ns.db.members[name] then ns.db.members[name].race = race end
 		end
 	end
 end
@@ -283,8 +300,8 @@ function ns.ProfileRows(roster)
 	local rows = {}
 	for name, m in pairs(ns.db.members) do
 		if m.profileAt and (not roster or roster[name]) then
-			table.insert(rows, string.format("%s,%d,%d,%s,%s,%d", name, m.number or 0, m.main and 1 or 0,
-				m.interests or "", m.profs or "", m.profileAt))
+			table.insert(rows, string.format("%s,%d,%d,%s,%s,%d,%s", name, m.number or 0, m.main and 1 or 0,
+				m.interests or "", m.profs or "", m.profileAt, m.race or ""))
 		end
 	end
 	return rows

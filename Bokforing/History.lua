@@ -24,14 +24,16 @@ local GRAPH_H, GRAPH_X, GRAPH_W = 110, 80, 600
 -- The graph's lines: running total and colour.
 local LINES = { { "spentSum", 0.9, 0.2, 0.2 }, { "predicted", 0.25, 0.5, 1 }, { "incomeSum", 1, 0.82, 0 } }
 -- Name, x, width.
-local COLUMNS = { { "Item", 0, 180 }, { "Crafted", 180, 60 }, { "Sold", 240, 60 }, { "Spent", 300, 75 }, { "Income", 375, 75 },
-	{ "Net", 450, 75 }, { "Expected each", 525, 80 }, { "Real each", 605, 80 } }
+-- Posted and On AH (Zach 10/11): what went up for sale against what sold.
+local COLUMNS = { { "Item", 0, 160 }, { "Crafted", 160, 50 }, { "Posted", 210, 50 }, { "Sold", 260, 45 }, { "On AH", 305, 45 },
+	{ "Spent", 350, 70 }, { "Income", 420, 70 }, { "Net", 490, 70 }, { "Expected each", 560, 65 }, { "Real each", 625, 65 } }
 
 local function Data()
 	local db = ns.db
 	db.plans = db.plans or {}
 	db.crafts = db.crafts or {}
 	db.spends = db.spends or {}
+	db.posts = db.posts or {}
 	return db
 end
 
@@ -45,12 +47,25 @@ end
 
 -- Lists ------------------------------------------------------------------
 
+-- A list still on the go: open, not marked done, and not crafted out
+-- (a work order's list has no crafts of his own).
+function ns.OnTheGo(p, now)
+	if p.done or not Open(p, now) then return false end
+	-- A work order or a flip (Zach 10/11): nothing of his to craft.
+	if p.order or p.flip then return true end
+	local made = 0
+	for _, c in ipairs(Data().crafts) do
+		if c.recipe == p.recipe and c.at >= p.at then made = made + 1 end
+	end
+	return made < p.crafts
+end
+
 -- The open plan for this recipe, number of crafts and kind of list, if any
 -- (Zach 9/11: no duplicate list).
 function ns.OpenPlan(id, crafts, raw)
 	local now = time()
 	for _, p in ipairs(Data().plans) do
-		if p.recipe == id and p.crafts == crafts and (p.raw or false) == (raw or false) and Open(p, now) then return p end
+		if p.recipe == id and p.crafts == crafts and (p.raw or false) == (raw or false) and ns.OnTheGo(p, now) then return p end
 	end
 end
 
@@ -59,20 +74,10 @@ function ns.NewPlan(id, item, crafts, raw, buy, name, recipe, order)
 	for reagent, n in pairs(buy) do need[reagent] = n end
 	-- The recipe's own reagents, for Making now (Work.lua).
 	for _, r in ipairs(recipe and recipe.reagents or {}) do table.insert(reagents, { r[1], r[2] }) end
-	table.insert(Data().plans, { at = time(), recipe = id, item = item, crafts = crafts, raw = raw or nil, need = need, bought = {}, name = name,
-		reagents = reagents, qty = recipe and recipe.qty or 1, recipeName = recipe and recipe.name, order = order })
-end
-
--- A list still on the go: open, not marked done, and not crafted out
--- (a work order's list has no crafts of his own).
-local function OnTheGo(p, now)
-	if p.done or not Open(p, now) then return false end
-	if p.order then return true end
-	local made = 0
-	for _, c in ipairs(Data().crafts) do
-		if c.recipe == p.recipe and c.at >= p.at then made = made + 1 end
-	end
-	return made < p.crafts
+	local plan = { at = time(), recipe = id, item = item, crafts = crafts, raw = raw or nil, need = need, bought = {}, name = name,
+		reagents = reagents, qty = recipe and recipe.qty or 1, recipeName = recipe and recipe.name, order = order }
+	table.insert(Data().plans, plan)
+	return plan
 end
 
 -- Gold spent on count of an item: the part a list on the go still needs is
@@ -84,7 +89,7 @@ local function Spend(item, count, money)
 	for i = #plans, 1, -1 do
 		local p = plans[i]
 		local want = (p.need[item] or 0) - (p.bought[item] or 0)
-		if left > 0 and want > 0 and OnTheGo(p, now) then
+		if left > 0 and want > 0 and ns.OnTheGo(p, now) then
 			local take = math.min(want, left)
 			p.bought[item] = (p.bought[item] or 0) + take
 			table.insert(Data().spends, { at = now, item = item, count = take, money = money * take / count, made = p.item })
@@ -118,8 +123,18 @@ local function MoneyChanged()
 end
 
 local lastSearched
+-- An auction he puts up, by hand or through Auctionator (Zach 10/11): the
+-- item and how many, read from the bag slot as it goes up.
+local function Posted(location, quantity)
+	if not (location and C_Item and C_Item.GetItemID) then return end
+	local ok, item = pcall(C_Item.GetItemID, location)
+	if ok and item then table.insert(Data().posts, { at = time(), item = item, qty = quantity or 1 }) end
+end
+
 local function Hooks()
 	local ah = C_AuctionHouse
+	if ah and ah.PostCommodity then hooksecurefunc(ah, "PostCommodity", function(location, _, quantity) Posted(location, quantity) end) end
+	if ah and ah.PostItem then hooksecurefunc(ah, "PostItem", function(location, _, quantity) Posted(location, quantity) end) end
 	if ah and ah.ConfirmCommoditiesPurchase then
 		hooksecurefunc(ah, "ConfirmCommoditiesPurchase", function(item, quantity) Expect(item, quantity) end)
 	end
@@ -205,7 +220,7 @@ end
 
 local function Prune()
 	local db, since = Data(), time() - KEEP
-	for _, key in ipairs({ "plans", "crafts", "spends" }) do
+	for _, key in ipairs({ "plans", "crafts", "spends", "posts" }) do
 		local list = db[key]
 		for i = #list, 1, -1 do
 			if list[i].at < since then table.remove(list, i) end
@@ -237,7 +252,7 @@ local function Totals()
 	end
 	local items, firstCraft, sales = {}, {}, {}
 	local function Item(name)
-		items[name] = items[name] or { name = name, crafted = 0, sold = 0, spent = 0, income = 0, expected = 0, expectedN = 0 }
+		items[name] = items[name] or { name = name, crafted = 0, posted = 0, returned = 0, sold = 0, spent = 0, income = 0, expected = 0, expectedN = 0 }
 		return items[name]
 	end
 	for _, c in ipairs(db.crafts) do
@@ -258,6 +273,13 @@ local function Totals()
 		local d = byDay[Day(s.at)]
 		if d then d.spent = d.spent + s.money end
 	end
+	-- A flip's item counts from its buy on, as a craft does (Zach 10/11).
+	for _, p in ipairs(db.plans) do
+		if p.flip and p.item then
+			local name = ns.ItemName(p.item)
+			if not firstCraft[name] or p.at < firstCraft[name] then firstCraft[name] = p.at end
+		end
+	end
 	-- Sales count only for items crafted before them (Zach 9/11).
 	local since = time() - KEEP
 	for name, saleList in pairs(db.sales or {}) do
@@ -272,8 +294,25 @@ local function Totals()
 			end
 		end
 	end
+	-- Posted and back again, of what he crafted, after the first craft.
+	for _, p in ipairs(db.posts) do
+		local name = ns.ItemName(p.item)
+		if firstCraft[name] and firstCraft[name] <= p.at and p.at >= since then
+			local it = Item(name)
+			it.posted = it.posted + p.qty
+		end
+	end
+	for name, list in pairs(db.returns or {}) do
+		for _, r in ipairs(list) do
+			if firstCraft[name] and firstCraft[name] <= r.at and r.at >= since then
+				local it = Item(name)
+				it.returned = it.returned + (r.count or 1)
+			end
+		end
+	end
 	for _, it in pairs(items) do
 		if it.expectedN > 0 then it.expectedEach = it.expected / it.expectedN end
+		it.onAH = math.max(0, it.posted - it.sold - it.returned)
 	end
 	for _, d in ipairs(days) do
 		local made, sold = {}, {}
@@ -445,6 +484,7 @@ local function Build(frame)
 			GameTooltip:AddLine("Spent: gold paid for reagents through Bokföring lists only. Reagents from your bags and buys outside a list are not counted.", 1, 1, 1, true)
 			GameTooltip:AddLine("Income: sold mails of this item after you crafted it, less the 5% cut.", 1, 1, 1, true)
 			GameTooltip:AddLine("Expected each: the auction house price less the cut when you crafted; real each: what it sold for.", 1, 1, 1, true)
+			GameTooltip:AddLine("Posted: put up on the auction house since you started crafting it, by hand or with Auctionator. On AH: posted, less sold and less what came back expired or cancelled.", 1, 1, 1, true)
 			if it.crafted > it.sold then
 				GameTooltip:AddLine(string.format("%d crafted not sold yet (or the sold mail not read yet).", it.crafted - it.sold), 0.6, 0.6, 0.6, true)
 			end
@@ -554,13 +594,15 @@ function ns.RefreshHistory(frame)
 		if it then
 			row.cells[1]:SetText(it.name)
 			row.cells[2]:SetText(it.crafted)
-			row.cells[3]:SetText(it.sold)
-			row.cells[4]:SetText(Money(it.spent))
-			row.cells[5]:SetText(Money(it.income))
-			row.cells[6]:SetText(Money(it.net, it.net < 0))
-			row.cells[7]:SetText(Money(it.expectedEach))
+			row.cells[3]:SetText(it.posted)
+			row.cells[4]:SetText(it.sold)
+			row.cells[5]:SetText(it.onAH)
+			row.cells[6]:SetText(Money(it.spent))
+			row.cells[7]:SetText(Money(it.income))
+			row.cells[8]:SetText(Money(it.net, it.net < 0))
+			row.cells[9]:SetText(Money(it.expectedEach))
 			-- Real under expected in red: it sold for less than promised.
-			row.cells[8]:SetText(Money(it.realEach, it.realEach and it.expectedEach and it.realEach < it.expectedEach))
+			row.cells[10]:SetText(Money(it.realEach, it.realEach and it.expectedEach and it.realEach < it.expectedEach))
 			row:Show()
 		else
 			row:Hide()
@@ -602,4 +644,42 @@ function ns.ExpectedEach(name)
 		local c = crafts[i]
 		if c.sells and ns.ItemName(c.item) == name then return c.sells / c.qty end
 	end
+end
+
+-- A clean start (Zach 10/11: the history from before the sold-mail fix was
+-- wrong). Crafts, lists, buys, posts and sales go; the mails already seen
+-- stay seen, so they are not counted again; the Market tab keeps following
+-- what was crafted.
+StaticPopupDialogs.BOKFORING_RESET = {
+	text = "Erase Bokföring's history (crafts, lists, buys, posted auctions and sales) and start again?\n\nMarket prices and recipes stay.",
+	button1 = YES,
+	button2 = NO,
+	timeout = 0,
+	whileDead = true,
+	hideOnEscape = true,
+	OnAccept = function()
+		local db = Data()
+		db.tracked = db.tracked or {}
+		for _, c in ipairs(db.crafts) do
+			if c.item then db.tracked[c.item] = true end
+		end
+		db.crafts, db.plans, db.spends, db.posts, db.sales, db.returns = {}, {}, {}, {}, {}, {}
+		ns.Print("history erased; it starts again from now.")
+		if ns.Refresh then ns.Refresh() end
+	end,
+}
+function ns.ResetHistory()
+	StaticPopup_Show("BOKFORING_RESET")
+end
+
+-- How many of an item are on the auction house now, from what was posted
+-- less what sold or came back (Today: do not craft what still waits there).
+function ns.OnAH(item)
+	local db, name, n = Data(), ns.ItemName(item), 0
+	for _, p in ipairs(db.posts) do
+		if p.item == item then n = n + p.qty end
+	end
+	for _, s in ipairs(db.sales and db.sales[name] or {}) do n = n - (s.count or 1) end
+	for _, r in ipairs(db.returns and db.returns[name] or {}) do n = n - (r.count or 1) end
+	return math.max(0, n)
 end

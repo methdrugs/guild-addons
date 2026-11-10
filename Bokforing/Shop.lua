@@ -61,13 +61,15 @@ function ns.Shop(id, crafts, raw, tries)
 	local open = ns.OpenPlan(id, crafts, raw)
 	local useOwned = ns.db.useOwned ~= false
 	local buy = {}
-	if open then
+	if open and not useOwned then
 		for item, n in pairs(open.need) do
 			local left = n - (open.bought[item] or 0)
 			if left > 0 then buy[item] = left end
 		end
 	else
-		-- What the bags hold, looked up once per item; nothing if unticked.
+		-- What the bags lack, looked up once per item; for an open list too
+		-- (Zach 9/11: x5 Blunderbuss gave only Medium Leather, the rest
+		-- counted as bought on that list but no longer in his bags).
 		local owned = setmetatable({}, { __index = function(t, item)
 			local n = useOwned and Owned(item) or 0
 			rawset(t, item, n)
@@ -96,8 +98,8 @@ function ns.Shop(id, crafts, raw, tries)
 		local name = ns.ItemName(item)
 		local each, how = ns.CostOf(item, false)
 		total = total + (each or 0) * count
-		if how == "vendor" then
-			table.insert(vendor, string.format("%d x %s (%s)", count, name, ns.Money(each * count)))
+		if how == "vendor" or ns.IsVendorGood(item) then
+			table.insert(vendor, string.format("%d x %s%s", count, name, each and (" (" .. ns.Money(each * count) .. ")") or ""))
 		else
 			table.insert(terms, SearchString(name, count))
 			table.insert(lines, string.format("%d x %s%s", count, name, each and (" (" .. ns.Money(each * count) .. ")") or ""))
@@ -152,7 +154,7 @@ function ns.ShopForOrder(name, reagents, crafts, to)
 	local recipe = { name = name, qty = 1, reagents = reagents }
 	ns.NewPlan(nil, nil, crafts, false, buy, listName, recipe, to)
 	for item, count in pairs(buy) do
-		if ns.Vendor(item) then
+		if ns.IsVendorGood(item) then
 			table.insert(vendor, string.format("%d x %s", count, ns.ItemName(item)))
 		else
 			table.insert(terms, SearchString(ns.ItemName(item), count))
@@ -167,6 +169,87 @@ function ns.ShopForOrder(name, reagents, crafts, to)
 		ns.Print(string.format("material att köpa till arbetsordern ligger i Auctionator-listan \"%s\"; se Making now i /bok.", listName))
 	end
 	for _, line in ipairs(vendor) do ns.Print("  vendor: " .. line) end
+end
+
+-- A list of items and counts, for Today's buys (Zach 10/11).
+function ns.BuyList(listName, wanted)
+	local terms, names = {}, {}
+	for _, w in ipairs(wanted) do
+		local name = Known(w[1]) or ns.ItemName(w[1])
+		table.insert(terms, SearchString(name, w[2]))
+		table.insert(names, string.format("%d x %s", w[2], name))
+	end
+	local api = Auctionator and Auctionator.API and Auctionator.API.v1
+	if #terms > 0 and api and api.CreateShoppingList and pcall(api.CreateShoppingList, CALLER, listName, terms) then
+		ns.Print(string.format("Auctionator list \"%s\": %s. Open Shopping in Auctionator and buy each with a click.", listName, table.concat(names, ", ")))
+	else
+		ns.Print("could not make an Auctionator list; buy these yourself: " .. table.concat(names, ", "))
+	end
+end
+
+-- Buy for N crafts with N filled in (Today, Level up).
+function ns.AskCrafts(id, n, raw)
+	local r = ns.Recipe(id)
+	if not r then return end
+	local dialog = StaticPopup_Show("BOKFORING_CRAFTS", r.name or ns.ItemName(r.item), nil, { id = id, raw = raw })
+	local box = dialog and (dialog.editBox or dialog.EditBox)
+	if box and n then
+		box:SetText(tostring(n))
+		box:HighlightText()
+	end
+end
+
+-- Recipes to buy (Zach 10/11): one Auctionator list, "Bokföring: recipes",
+-- made again with every recipe item added and not yet in the bags.
+local RECIPE_LIST = "Bokföring: recipes"
+function ns.BuyRecipe(item, remove)
+	ns.db.recipeBuy = ns.db.recipeBuy or {}
+	ns.db.recipeBuy[item] = not remove or nil
+	local terms, names = {}, {}
+	for wanted in pairs(ns.db.recipeBuy) do
+		if Owned(wanted) > 0 then
+			ns.db.recipeBuy[wanted] = nil
+		else
+			local name = Known(wanted)
+			if name then
+				table.insert(terms, SearchString(name, 1))
+				table.insert(names, name)
+			end
+		end
+	end
+	local api = Auctionator and Auctionator.API and Auctionator.API.v1
+	if #terms == 0 then
+		if api and api.DeleteShoppingList then pcall(api.DeleteShoppingList, CALLER, RECIPE_LIST) end
+		ns.Print("no recipes left to buy.")
+		return
+	end
+	if api and api.CreateShoppingList and pcall(api.CreateShoppingList, CALLER, RECIPE_LIST, terms) then
+		table.sort(names)
+		ns.Print(string.format("Auctionator list \"%s\": %s.", RECIPE_LIST, table.concat(names, ", ")))
+	else
+		ns.Print("could not make an Auctionator list; buy it yourself: " .. ns.ItemName(item))
+	end
+end
+
+function ns.WantsRecipe(item)
+	return ns.db.recipeBuy and ns.db.recipeBuy[item] or false
+end
+
+-- Right-click on the line under an unlearned recipe.
+function ns.RecipeMenu(owner, item)
+	if not (MenuUtil and MenuUtil.CreateContextMenu) then
+		ns.BuyRecipe(item, ns.WantsRecipe(item))
+		return
+	end
+	MenuUtil.CreateContextMenu(owner, function(_, root)
+		local price = ns.AH(item)
+		root:CreateTitle(ns.ItemName(item))
+		if ns.WantsRecipe(item) then
+			root:CreateButton("Take off the recipe list", function() ns.BuyRecipe(item, true) end)
+		else
+			root:CreateButton("Buy" .. (price and (" (AH " .. ns.Money(price) .. ")") or " (not seen on the AH)"), function() ns.BuyRecipe(item) end)
+		end
+	end)
 end
 
 -- How many crafts: a small box, then the list.
@@ -197,7 +280,8 @@ StaticPopupDialogs.BOKFORING_CRAFTS = {
 }
 
 local function Ask(row, raw)
-	StaticPopup_Show("BOKFORING_CRAFTS", row.recipe.name or ns.ItemName(row.recipe.item), nil, { id = row.id, raw = raw })
+	-- Level up fills in the crafts until green (Zach 10/11).
+	ns.AskCrafts(row.id, row.levelN, raw)
 end
 
 -- The right-click menu on a recipe row.
@@ -209,6 +293,21 @@ function ns.ShopMenu(owner, row)
 			root:CreateButton("Buy raw materials for N crafts...", function() Ask(row, true) end)
 			root:CreateCheckbox("Use reagents in my bags", function() return ns.db.useOwned ~= false end,
 				function() ns.db.useOwned = ns.db.useOwned == false end)
+			-- Its price on the Market tab, without crafting it (Zach 9/11).
+			root:CreateCheckbox("Watch the price (Market tab)", function() return ns.Watched(row.recipe.item) end,
+				function() ns.Watch(row.recipe.item) end)
+			-- Not learned here and there is a recipe item: buy it (Zach 10/11).
+			local recipeItem = not row.recipe.by[ns.MeKey()] and ns.LearnInfo(row.recipe).item
+			if recipeItem then
+				if root.CreateDivider then root:CreateDivider() end
+				if ns.WantsRecipe(recipeItem) then
+					root:CreateButton("Take the recipe off the recipe list", function() ns.BuyRecipe(recipeItem, true) end)
+				else
+					local price = ns.AH(recipeItem)
+					root:CreateButton("Buy the recipe" .. (price and (" (AH " .. ns.Money(price) .. ")") or " (not seen on the AH)"),
+						function() ns.BuyRecipe(recipeItem) end)
+				end
+			end
 		end)
 	else
 		-- No menu on this client: the quickest craft; raw with Shift.

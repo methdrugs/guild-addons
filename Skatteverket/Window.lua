@@ -48,7 +48,8 @@ local WINDOWS = {
 	prestationer = { name = "SkatteverketPrestationerFrame", title = "Prestationer", w = MEMBER_W, h = FRAME_H },
 }
 -- Min anmälan sits with Inställningar (Zach 9/11): that is where things are changed.
-local PAGE_WINDOW = { "skatt", "yrken", "options", "nytt", "options", "swedbank", "prestationer", "yrken" }
+-- 9: Lämnat, the leader's tab of the Skatt window (Zach 10/11).
+local PAGE_WINDOW = { "skatt", "yrken", "options", "nytt", "options", "swedbank", "prestationer", "yrken", "skatt" }
 
 local frame, rows, headers, sorted = nil, {}, {}, {}
 local offset, selected, leaderMode = 0, nil, false
@@ -326,6 +327,13 @@ local function Build(id)
 	if id == "skatt" then
 		frame = f
 		BuildTax()
+		f.left = CreateFrame("Frame", nil, f)
+		f.left:SetAllPoints()
+		ns.BuildLeavers(f.left)
+		f.sideTabs = {
+			SideTab(f, 1, "INV_Misc_Coin_02", "Ställning", function() ns.ShowTab(1) end),
+			SideTab(f, 2, "Ability_Rogue_Sprint", "Lämnat", function() ns.ShowTab(9) end),
+		}
 	elseif id == "yrken" then
 		f.professions = CreateFrame("Frame", nil, f)
 		f.professions:SetAllPoints()
@@ -422,6 +430,13 @@ local function Layout(w)
 		end
 		SetShown(f.lead, leaderMode)
 		SetShown(f.leaderInfo, leaderMode)
+		-- Lämnat is the leader's only.
+		local leftPage = leaderMode and not locked and page == 9
+		f.tax:SetShown(not locked and not leftPage)
+		SetShown(f.left, leftPage)
+		for _, t in ipairs(f.sideTabs) do SetShown(t, leaderMode and not locked) end
+		f.sideTabs[1]:SetChecked(not leftPage)
+		f.sideTabs[2]:SetChecked(leftPage)
 	elseif w.id == "yrken" then
 		SetShown(f.professions, not locked and page == 2)
 		SetShown(f.orders, not locked and page == 8)
@@ -563,7 +578,8 @@ function ns.RefreshWindow(id)
 			if WINDOWS[wid].locked and ns.Locked() ~= w.lockState then Layout(w) end
 			if f.bank then f.bank:SetText(w.open and BankText() or "") end
 			if w.open then
-				if wid == "skatt" then RefreshTax()
+				if wid == "skatt" then
+					if w.page == 9 then ns.RefreshLeavers() else RefreshTax() end
 				elseif wid == "yrken" then
 					if w.page == 8 then ns.RefreshOrders() else ns.RefreshRegistry() end
 				elseif wid == "swedbank" and SwedbankPanel then SwedbankPanel.Refresh()
@@ -618,6 +634,8 @@ SkatteverketAPI = {
 	end,
 	-- Why this character cannot use the windows yet: "unsigned", "waiting", or nil.
 	Locked = function() return ns.Locked() end,
+	-- The bolt's to-do badge, for Swedbank's loans (Zach 10/11).
+	RefreshTodo = function() if ns.RefreshTodo then ns.RefreshTodo() end end,
 	-- A member's standing as last seen, or nil if unknown.
 	MemberStanding = function(name)
 		local m = ns.db and ns.db.members[name]

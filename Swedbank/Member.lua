@@ -18,6 +18,10 @@ local bankOpen, pendingPay = false, nil
 local STATUS = {
 	sending = "Väntar på att ledaren loggar in",
 	pending = "Väntar på godkännande",
+	offered = "|cffffd100Erbjudande: svara|r",
+	accepted = "Accepterat, väntar på ledaren",
+	refused = "|cffff8040Avböjt av dig|r",
+	expired = "|cff808080Erbjudandet gick ut|r",
 	declined = "|cffff4040Nekat|r",
 	repaid = "|cff40ff40Återbetalt|r",
 }
@@ -32,7 +36,9 @@ end
 -- What a loan costs now, from the leader's last figures.
 local function DueNow(loan)
 	if loan.status ~= "approved" or not loan.sentAt then return loan.amount end
-	local extra = loan.left * loan.rate * (time() - loan.asOf) / ns.WEEK
+	-- Each week begun since the leader's figures adds the rate (Zach 10/11).
+	local weeks = ns.WeeksAt(loan.sentAt, time()) - ns.WeeksAt(loan.sentAt, loan.asOf)
+	local extra = loan.left * loan.rate * math.max(0, weeks)
 	return math.max(0, loan.left + loan.interest + math.floor(extra) - Unconfirmed(loan) - (loan.unverified or 0))
 end
 
@@ -59,8 +65,11 @@ local function Sync(force)
 	lastSync = GetTime()
 	for id, loan in pairs(ns.char.loans) do
 		if loan.status == "sending" then
-			ns.Whisper(leader, string.format("APP;%s;%d;%d;%d;%s", id, loan.amount, loan.repayBy or 0, loan.appliedAt, loan.reason))
+			ns.Whisper(leader, string.format("AP2;%s;%d;%d;%d;%d;%s", id, loan.amount, loan.repayBy or 0, loan.appliedAt,
+				math.floor((loan.wishRate or ns.MIN_RATE) * 10000 + 0.5), loan.reason))
 		end
+		-- An answer to an offer, until the leader has it.
+		if loan.answer then ns.Whisper(leader, string.format("ANS;%s;%s", id, loan.answer)) end
 		for pid, p in pairs(loan.outbox or {}) do
 			ns.Whisper(leader, string.format("PAY;%s;%s;%d;%d", id, pid, p.amount, p.t))
 		end
@@ -150,9 +159,20 @@ function ns.OnMemberMessage(msg)
 	elseif msg:match("^UPD;") then
 		local id, status, amount, rate, sentAt, repayBy, left, interest, asOf, paid, closedAt, unverified = strsplit(";", msg:sub(5))
 		if not id or not status then return end
+		-- Removed by the leader (Zach 10/11): gone here too.
+		if status == "removed" then
+			if ns.char.loans[id] then
+				ns.char.loans[id] = nil
+				ns.Print("guildledaren har tagit bort ett lån eller en ansökan från din lista.")
+			end
+			ns.RefreshMember()
+			return
+		end
 		local loan = ns.char.loans[id] or { id = id, reason = "", appliedAt = 0 }
 		ns.char.loans[id] = loan
 		local before, wasSent = loan.status, loan.sentAt
+		-- Our answer is on its way: keep it until the leader has it.
+		if loan.answer and status == "offered" then status = loan.answer == "1" and "accepted" or "refused" else loan.answer = nil end
 		loan.status, loan.amount, loan.rate = status, tonumber(amount) or 0, tonumber(rate) or 0
 		sentAt, repayBy, closedAt = tonumber(sentAt) or 0, tonumber(repayBy) or 0, tonumber(closedAt) or 0
 		loan.sentAt = sentAt > 0 and sentAt or nil
@@ -165,7 +185,12 @@ function ns.OnMemberMessage(msg)
 		local money = ns.Money(loan.amount)
 		if status ~= before then
 			if status == "approved" then
-				ns.Print(string.format("ditt lån på %s är godkänt med %g %% ränta i veckan. Guldet kommer med posten.", money, loan.rate * 100))
+				ns.Print(string.format("ditt lån på %s är godkänt med %g %% ränta per påbörjad vecka, betala senast %s. Guldet kommer med posten.", money, loan.rate * 100, ns.Day(loan.repayBy)))
+			elseif status == "offered" then
+				ns.Print(string.format("guildledaren erbjuder %g %% ränta per påbörjad vecka på lånet om %s, betala senast %s. Svara under Swedbank, Mina lån.",
+					loan.rate * 100, money, ns.Day(loan.repayBy)))
+			elseif status == "expired" then
+				ns.Print("erbjudandet om lånet på " .. money .. " gick ut efter 3 dagar utan svar; ansök igen om du vill.")
 			elseif status == "declined" then
 				ns.Print("din ansökan om " .. money .. " har nekats.")
 			elseif status == "repaid" then
@@ -173,7 +198,7 @@ function ns.OnMemberMessage(msg)
 			end
 		end
 		if loan.sentAt and not wasSent and status == "approved" then
-			ns.Print("guldet för ditt lån på " .. money .. " har skickats. Räntan räknas från i dag.")
+			ns.Print("guldet för ditt lån på " .. money .. " har skickats. Räntan börjar räknas i morgon; se lånet under Mina lån.")
 		end
 	end
 	ns.RefreshMember()
@@ -201,10 +226,13 @@ local function Submit()
 		repayBy = ns.ParseDate(repayText)
 		if not repayBy then ns.Print("skriv datumet som dd/mm, till exempel 24/12.") return end
 	end
+	local percent = tonumber(((frame.rate:GetText() or ""):gsub(",", ".")))
+	if not percent or percent < ns.MIN_RATE * 100 then ns.Print(string.format("önskad ränta: minst %g %%.", ns.MIN_RATE * 100)) return end
 	local reason = ns.Trim(frame.reason:GetText(), ns.REASON_BYTES)
 	if reason == "" then ns.Print("skriv vad lånet ska användas till.") return end
 	local id = string.format("%s-%d-%03d", UnitName("player"), time(), math.random(999))
-	ns.char.loans[id] = { id = id, amount = amount, reason = reason, repayBy = repayBy, appliedAt = time(), status = "sending" }
+	ns.char.loans[id] = { id = id, amount = amount, reason = reason, repayBy = repayBy, appliedAt = time(), status = "sending", wishRate = percent / 100 }
+	frame.rate:SetText("5")
 	frame.amount:SetText("")
 	frame.repayBy:SetText("")
 	frame.reason:SetText("")
@@ -239,6 +267,120 @@ local function Layout()
 	frame.sideTabs.Select(tab)
 end
 
+-- One loan opened from Mina lån (Zach 10/11: click up the current loan
+-- and see what is going on): what was lent, the rule, interest so far,
+-- what is due now, when the next week's interest is added, and the last day.
+local view
+local function BuildView()
+	local ok
+	if C_XMLUtil and C_XMLUtil.GetTemplateInfo and C_XMLUtil.GetTemplateInfo("ButtonFrameTemplate") then
+		ok, view = pcall(CreateFrame, "Frame", "SwedbankLoanView", UIParent, "ButtonFrameTemplate")
+	end
+	if not ok or not view then
+		view = CreateFrame("Frame", "SwedbankLoanView", UIParent, BackdropTemplateMixin and "BackdropTemplate")
+		view:SetBackdrop({ bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background", edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+			tile = true, tileSize = 32, edgeSize = 32, insets = { left = 11, right = 12, top = 12, bottom = 11 } })
+	end
+	view:SetSize(380, 340)
+	view:SetPoint("CENTER", 0, 40)
+	view:SetFrameStrata("DIALOG")
+	view:SetToplevel(true)
+	view:EnableMouse(true)
+	view:SetMovable(true)
+	view:RegisterForDrag("LeftButton")
+	view:SetScript("OnDragStart", view.StartMoving)
+	view:SetScript("OnDragStop", view.StopMovingOrSizing)
+	tinsert(UISpecialFrames, "SwedbankLoanView")
+	local title = view.TitleText or (view.TitleContainer and view.TitleContainer.TitleText)
+	if title then title:SetText("Mitt lån") end
+	local portrait = view.portrait or view.Portrait or (view.PortraitContainer and view.PortraitContainer.portrait)
+	if view.SetPortraitToAsset then view:SetPortraitToAsset("Interface\\Icons\\INV_Misc_Coin_02") elseif portrait then portrait:SetTexture("Interface\\Icons\\INV_Misc_Coin_02") end
+	view.body = view:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+	view.body:SetPoint("TOPLEFT", 24, -70)
+	view.body:SetWidth(332)
+	view.body:SetJustifyH("LEFT")
+	view.body:SetJustifyV("TOP")
+	view.body:SetSpacing(3)
+	local close = CreateFrame("Button", nil, view, "UIPanelButtonTemplate")
+	close:SetSize(90, 22)
+	close:SetPoint("BOTTOMRIGHT", -8, 4)
+	close:SetText("Stäng")
+	close:SetScript("OnClick", function() view:Hide() end)
+	-- An offer: accept (back to the leader to confirm) or refuse (ends it).
+	local function Answer(yes)
+		local loan = view.loan
+		if not loan or loan.status ~= "offered" then return end
+		loan.answer = yes and "1" or "0"
+		loan.status = yes and "accepted" or "refused"
+		local leader, online = ns.Leader()
+		if leader and online then ns.Whisper(leader, string.format("ANS;%s;%s", loan.id, loan.answer)) end
+		ns.Print(yes and "du har accepterat erbjudandet; guildledaren bekräftar lånet." or "du har avböjt erbjudandet; ansökan är avslutad.")
+		ns.RefreshMember()
+		view.show(loan)
+	end
+	view.refuse = CreateFrame("Button", nil, view, "UIPanelButtonTemplate")
+	view.refuse:SetSize(90, 22)
+	view.refuse:SetPoint("RIGHT", close, "LEFT", -4, 0)
+	view.refuse:SetText("Avböj")
+	view.refuse:SetScript("OnClick", function() Answer(false) end)
+	view.accept = CreateFrame("Button", nil, view, "UIPanelButtonTemplate")
+	view.accept:SetSize(90, 22)
+	view.accept:SetPoint("RIGHT", view.refuse, "LEFT", -4, 0)
+	view.accept:SetText("Acceptera")
+	view.accept:SetScript("OnClick", function() Answer(true) end)
+	view:Hide()
+end
+
+local ShowLoan
+ShowLoan = function(loan)
+	if not loan then return end
+	if not view then
+		BuildView()
+		view.show = function(l) ShowLoan(l) end
+	end
+	view.loan = loan
+	local gold, label = "|cffffd100", "|r "
+	local lines = {
+		gold .. "Lånat:" .. label .. ns.Money(loan.amount),
+		gold .. "Status:" .. label .. StatusText(loan),
+	}
+	if loan.wishRate then table.insert(lines, gold .. "Din önskade ränta:" .. label .. string.format("%g %%", loan.wishRate * 100)) end
+	if loan.rate and loan.rate > 0 then
+		table.insert(lines, gold .. (loan.status == "offered" and "Erbjuden ränta:" or "Ränta:") .. label
+			.. string.format("%g %% per påbörjad vecka på det som är kvar", loan.rate * 100))
+	end
+	if loan.status == "offered" then
+		table.insert(lines, "|cffffd100Guildledaren erbjuder den här räntan och sista dagen. Acceptera så bekräftar ledaren lånet; avböj så avslutas ansökan. Svara inom 3 dagar, annars går erbjudandet ut.|r")
+	end
+	if loan.sentAt then
+		local now = time()
+		local weeks = ns.WeeksAt(loan.sentAt, now)
+		table.insert(lines, gold .. "Skickat:" .. label .. ns.Day(loan.sentAt) .. ", räntan räknas från " .. ns.Day(ns.InterestStart(loan.sentAt)))
+		table.insert(lines, gold .. "Påbörjade veckor:" .. label .. weeks)
+		table.insert(lines, gold .. "Betalt hittills:" .. label .. ns.Money(loan.paid or 0))
+		table.insert(lines, gold .. "Att betala nu:" .. label .. ns.Money(DueNow(loan)))
+		if loan.status == "approved" and loan.rate and loan.rate > 0 then
+			local nextAt = ns.NextInterest(loan.sentAt, now)
+			table.insert(lines, gold .. "Nästa ränta:" .. label .. string.format("%s, +%s om det inte är betalt", ns.Day(nextAt),
+				ns.Money(math.floor((loan.left or loan.amount) * loan.rate))))
+		end
+	else
+		table.insert(lines, gold .. "Skickat:" .. label .. "inte än; räntan börjar dagen efter att guldet skickats")
+	end
+	if (loan.repayBy or 0) > 0 then
+		local days = math.ceil((loan.repayBy - time()) / 86400)
+		table.insert(lines, gold .. "Betala senast:" .. label .. ns.Day(loan.repayBy)
+			.. (days < 0 and " |cffff4040(försenat)|r" or days == 0 and " (i dag)" or string.format(" (om %d dag%s)", days, days == 1 and "" or "ar")))
+	end
+	if loan.reason and loan.reason ~= "" then table.insert(lines, gold .. "Anledning:" .. label .. loan.reason) end
+	table.insert(lines, " ")
+	table.insert(lines, "|cffa0a0a0Betalar du samma dag som guldet skickas kostar det ingen ränta. Varje ny påbörjad vecka läggs räntan på det som är kvar. Betalningar går först till räntan, sedan till lånet. Betala tillbaka under Mina lån vid guildbanken.|r")
+	view.body:SetText(table.concat(lines, "\n"))
+	view.accept:SetShown(loan.status == "offered")
+	view.refuse:SetShown(loan.status == "offered")
+	view:Show()
+end
+
 function ns.BuildMember(page, panel)
 	frame = CreateFrame("Frame", nil, page)
 	frame:SetAllPoints()
@@ -255,18 +397,26 @@ function ns.BuildMember(page, panel)
 	ns.Text(apply, "GameFontNormalSmall", "TOPLEFT", 24, -150):SetText("Betala senast")
 	frame.repayBy = ns.Input(apply, 60)
 	frame.repayBy:SetPoint("TOPLEFT", 150, -146)
-	ns.Text(apply, "GameFontDisableSmall", "LEFT", frame.repayBy, "RIGHT", 10, 0):SetText("dd/mm, valfritt")
-	ns.Text(apply, "GameFontNormalSmall", "TOPLEFT", 24, -178):SetText("Anledning")
+	ns.Text(apply, "GameFontDisableSmall", "LEFT", frame.repayBy, "RIGHT", 10, 0):SetText("dd/mm, valfritt; ett önskemål, guildledaren bestämmer")
+	-- The rate the member hopes for, 3 % at least (Zach 10/11).
+	ns.Text(apply, "GameFontNormalSmall", "TOPLEFT", 24, -178):SetText("Önskad ränta")
+	frame.rate = ns.Input(apply, 40)
+	frame.rate:SetPoint("TOPLEFT", 150, -174)
+	-- 5 % filled in, 3 % the floor (Zach 10/11).
+	frame.rate:SetText("5")
+	ns.Text(apply, "GameFontHighlightSmall", "LEFT", frame.rate, "RIGHT", 6, 0):SetText("% per påbörjad vecka")
+	ns.Text(apply, "GameFontDisableSmall", "LEFT", frame.rate, "RIGHT", 140, 0):SetText("3 % är absolut minimum")
+	ns.Text(apply, "GameFontNormalSmall", "TOPLEFT", 24, -206):SetText("Anledning")
 	frame.reason = ns.Input(apply, W - 180, Submit)
-	frame.reason:SetPoint("TOPLEFT", 150, -174)
+	frame.reason:SetPoint("TOPLEFT", 150, -202)
 	frame.reason:SetMaxBytes(ns.REASON_BYTES + 1)
 	frame.submit = ns.Button(apply, "Skicka", 100, Submit)
-	frame.submit:SetPoint("TOPLEFT", 146, -202)
+	frame.submit:SetPoint("TOPLEFT", 146, -230)
 	frame.submitHint = ns.Text(apply, "GameFontDisableSmall", "LEFT", frame.submit, "RIGHT", 12, 0)
 	frame.submitHint:SetWidth(W - 290)
-	local terms = ns.Text(apply, "GameFontHighlightSmall", "TOPLEFT", 24, -246)
+	local terms = ns.Text(apply, "GameFontHighlightSmall", "TOPLEFT", 24, -274)
 	terms:SetWidth(W - 48)
-	terms:SetText("Bara guildledaren ser din ansökan och dina lån. Du behöver God ställning hos Skatteverket för att ansöka. Räntan är enkel och räknas per vecka på det som är kvar av lånet, från dagen guldet skickas. Betalningar går först till räntan, sedan till lånet. Betala tillbaka under Mina lån när du står vid guildbanken.")
+	terms:SetText("Bara guildledaren ser din ansökan och dina lån. Du behöver God ställning hos Skatteverket för att ansöka. Räntan räknas per påbörjad vecka på det som är kvar av lånet, från dagen efter att guldet skickats: betalar du samma dag kostar det inget, dag 1-7 en veckas ränta, dag 8-14 två. Du önskar en ränta, minst 3 %; guildledaren godkänner den eller erbjuder en annan, som du accepterar eller avböjer. Guildledaren bestämmer sista betaldag. Betalningar går först till räntan, sedan till lånet. Betala tillbaka under Mina lån när du står vid guildbanken.")
 
 	-- Page 2: Mina lån.
 	local loans = CreateFrame("Frame", nil, frame)
@@ -280,6 +430,8 @@ function ns.BuildMember(page, panel)
 			selected = row.id
 			local loan = ns.char.loans[row.id]
 			if Active(loan) then frame.payAmount:SetText(string.format("%dg%ds%dc", math.floor(DueNow(loan) / 10000), math.floor(DueNow(loan) / 100) % 100, DueNow(loan) % 100)) end
+			-- And open it, with everything about it (Zach 10/11).
+			ShowLoan(loan)
 			ns.RefreshMember()
 		end)
 	end
@@ -350,7 +502,8 @@ function ns.RefreshMember()
 	for _, loan in pairs(ns.char.loans) do table.insert(sorted, loan) end
 	-- Open loans first (running, then waiting), newest first within each; the
 	-- list scrolls with the mouse wheel, so no loan drops out of reach (review 6/11).
-	local order = { approved = 1, pending = 2, sending = 2 }
+	-- An offer to answer on top (Zach 10/11).
+	local order = { offered = 0, approved = 1, accepted = 2, pending = 2, sending = 2 }
 	table.sort(sorted, function(a, b)
 		local oa, ob = order[a.status] or 3, order[b.status] or 3
 		if oa ~= ob then return oa < ob end
