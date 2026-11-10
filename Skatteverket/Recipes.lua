@@ -337,6 +337,8 @@ local function Data(key)
 		schematic = okSchematic and schematic or nil
 		d.item = schematic and schematic.outputItemID
 		if d.item == 0 then d.item = nil end
+		-- How many one craft makes, for raw materials (Zach 10/11).
+		d.makes = math.max(1, schematic and schematic.quantityMin or 1)
 		d.name = r and r.name
 		d.icon = r and r.icon
 		for _, slot in ipairs(schematic and schematic.reagentSlotSchematics or {}) do
@@ -372,6 +374,46 @@ local function Name(key)
 end
 -- For arbetsordrar (Orders.lua).
 ns.RecipeName = function(key) return Name(key) or "..." end
+
+-- Raw materials (Zach 10/11): a reagent the crafter makes themselves at a
+-- colour that still gives skill points (orange, yellow, green, as their own
+-- shared list shows it) is better sent as what it is made of, so they
+-- level on it too; down every step that still gives points. Returns the
+-- raw materials { itemID, count } for count crafts, and the steps they
+-- make on the way { itemID, crafts, colour }; nil when nothing changes or
+-- something is still loading.
+local POINTS = { o = true, y = true, g = true }
+function ns.RawPlan(crafter, key, count)
+	local makes = {}
+	for _, list in pairs(ns.db.recipes[crafter] or {}) do
+		for _, k in ipairs(list.keys or {}) do
+			local _, _, colour = Parse(k)
+			if k:sub(1, 1) ~= "#" and POINTS[colour] then
+				local d = Data(k)
+				if d and d.item and #d.reagents > 0 then makes[d.item] = { key = k, colour = colour, d = d } end
+			end
+		end
+	end
+	local top = Data(key)
+	if not top or #top.reagents == 0 then return end
+	local raw, steps, order = {}, {}, {}
+	local function Add(item, n)
+		if not raw[item] then table.insert(order, item) end
+		raw[item] = (raw[item] or 0) + n
+	end
+	local function Expand(item, need, depth)
+		local m = makes[item]
+		if not m or depth > 4 then Add(item, need) return end
+		local crafts = math.ceil(need / m.d.makes)
+		table.insert(steps, { itemID = item, crafts = crafts, colour = m.colour })
+		for _, r in ipairs(m.d.reagents) do Expand(r.itemID, r.count * crafts, depth + 1) end
+	end
+	for _, r in ipairs(top.reagents) do Expand(r.itemID, r.count * count, 1) end
+	if #steps == 0 then return end
+	local out = {}
+	for _, item in ipairs(order) do table.insert(out, { itemID = item, count = raw[item] }) end
+	return out, steps
+end
 
 -- { recipe, name, code } for every recipe whose name contains text, in
 -- members who are in the guild now; recipe name first, then member.

@@ -501,8 +501,24 @@ end
 local function BankText()
 	local bank = ns.db.bank
 	if not bank then return "Guildbanken: inte läst än. Saldot visas när någon med addonen öppnar banken." end
-	return string.format("Guildbanken: |cffffffff%s|r  (läst av %s %s)", ns.Money(bank.amount),
+	local text = string.format("Guildbanken: |cffffffff%s|r  (läst av %s %s)", ns.Money(bank.amount),
 		bank.by or "okänd", date("%d/%m %H:%M", bank.at))
+	-- The leader: reported loan payments still waiting for the bank log (Zach 10/11).
+	local count, total = 0, 0
+	if SwedbankPanel and SwedbankPanel.Unchecked then count, total = SwedbankPanel.Unchecked() end
+	if count > 0 then
+		text = text .. string.format("  |cffffd100%d betalning%s (%s) väntar på bankloggen, öppna guildbanken|r",
+			count, count > 1 and "ar" or "", ns.Money(total))
+	end
+	return text
+end
+
+-- Only the bank line, for Swedbank when a payment comes in or checks out.
+function ns.RefreshBank()
+	for _, w in pairs(wins) do
+		local f = w.frame
+		if f:IsShown() and f.bank then f.bank:SetText(w.open and BankText() or "") end
+	end
 end
 
 -- Guild repairs from the bank (Leader.lua), red when more than paid in tax.
@@ -688,6 +704,8 @@ SkatteverketAPI = {
 	Locked = function() return ns.Locked() end,
 	-- The bolt's to-do badge, for Swedbank's loans (Zach 10/11).
 	RefreshTodo = function() if ns.RefreshTodo then ns.RefreshTodo() end end,
+	-- The bank line, for Swedbank's unchecked payments (Zach 10/11).
+	RefreshBank = function() if ns.RefreshBank then ns.RefreshBank() end end,
 	-- A member's standing as last seen, or nil if unknown.
 	MemberStanding = function(name)
 		local m = ns.db and ns.db.members[name]

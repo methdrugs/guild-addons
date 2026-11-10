@@ -143,15 +143,21 @@ end
 -- A work order where he sends the materials (Zach 9/11): what the crafter
 -- needs that his bags do not hold goes on an Auctionator list, and the order
 -- shows under Making now until bought or marked done. reagents are
--- { itemID, count } per craft, from Skatteverket's recipe data.
-function ns.ShopForOrder(name, reagents, crafts, to)
+-- { itemID, count } per craft, from Skatteverket's recipe data; with
+-- total, the counts are for the whole order (raw materials, Zach 10/11).
+function ns.ShopForOrder(name, reagents, crafts, to, total)
 	local buy, terms, vendor = {}, {}, {}
 	for _, r in ipairs(reagents) do
-		local missing = r[2] * crafts - Owned(r[1])
+		local missing = (total and r[2] or r[2] * crafts) - Owned(r[1])
 		if missing > 0 then buy[r[1]] = (buy[r[1]] or 0) + missing end
 	end
 	local listName = string.format("Bokföring: %s x%d till %s", name, crafts, to)
-	local recipe = { name = name, qty = 1, reagents = reagents }
+	local perCraft = reagents
+	if total then
+		perCraft = {}
+		for _, r in ipairs(reagents) do table.insert(perCraft, { r[1], r[2] / crafts }) end
+	end
+	local recipe = { name = name, qty = 1, reagents = perCraft }
 	ns.NewPlan(nil, nil, crafts, false, buy, listName, recipe, to)
 	for item, count in pairs(buy) do
 		if ns.IsVendorGood(item) then

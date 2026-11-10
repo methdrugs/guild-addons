@@ -186,7 +186,8 @@ end
 local button
 local function ShowButton()
 	if button or not MailFrame then return end
-	button = CreateFrame("Button", nil, MailFrame)
+	-- On the inbox only, not Send Mail (Zach 10/11): it hides with that tab.
+	button = CreateFrame("Button", nil, InboxFrame or MailFrame)
 	button:SetSize(26, 26)
 	-- Inside the mailbox, top right under the close button, in the dark band
 	-- above the mail list (Zach 9/11, screenshot); on its left side it was

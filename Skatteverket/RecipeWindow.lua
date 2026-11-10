@@ -8,8 +8,10 @@
 
 local _, ns = ...
 
-local W, H = 430, 560
-local LIST_ROWS, ROW_H = 13, 17
+-- The classic profession window's measures (Zach 10/11, screenshot): about
+-- 350 wide, rows of 16, a 265 wide skill bar of 14, reagents of 147 x 41.
+local W, H = 350, 500
+local LIST_ROWS, ROW_H = 8, 16
 local COLOURS = { o = { 1, 0.5, 0.25 }, y = { 1, 1, 0 }, g = { 0.25, 0.75, 0.25 }, x = { 0.5, 0.5, 0.5 } }
 
 local frame, rows, reagents = nil, {}, {}
@@ -112,43 +114,67 @@ local function Build()
 	end
 	frame.portrait = frame.portrait or frame.Portrait or (frame.PortraitContainer and frame.PortraitContainer.portrait)
 
-	-- The skill bar under the title, as in the profession window
-	-- (screenshot 7/11): framed, blue, the name on the left and rank/cap.
-	local bar = CreateFrame("StatusBar", nil, frame, BackdropTemplateMixin and "BackdropTemplate")
-	bar:SetSize(W - 84, 16)
-	bar:SetPoint("TOPLEFT", 64, -30)
-	bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
-	bar:SetStatusBarColor(0, 0.3, 0.85)
+	-- The skill bar under the title, as in the classic profession window
+	-- (Zach 10/11, screenshot): the character sheet's skill bar art, half
+	-- blue on a faint blue ground, its own border, the name in gold and the
+	-- rank in white.
+	local bar = CreateFrame("StatusBar", nil, frame)
+	bar:SetSize(265, 14)
+	bar:SetPoint("TOPLEFT", 66, -34)
+	bar:SetStatusBarTexture("Interface\\PaperDollInfoFrame\\UI-Character-Skills-Bar")
+	bar:SetStatusBarColor(0, 0, 1, 0.5)
 	local barBg = bar:CreateTexture(nil, "BACKGROUND")
 	barBg:SetAllPoints()
-	barBg:SetColorTexture(0.12, 0.12, 0.2, 0.9)
-	if bar.SetBackdrop then
-		-- A thin grey edge, a little outside the bar.
-		local edge = CreateFrame("Frame", nil, bar, "BackdropTemplate")
-		edge:SetPoint("TOPLEFT", -3, 3)
-		edge:SetPoint("BOTTOMRIGHT", 3, -3)
-		edge:SetBackdrop({ edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", edgeSize = 10 })
-		edge:SetBackdropBorderColor(0.6, 0.6, 0.6, 1)
-	end
-	bar.text = Text(bar, "GameFontHighlightSmall", "LEFT", 8, 0)
-	bar.value = Text(bar, "GameFontHighlightSmall", "LEFT", bar.text, "RIGHT", 24, 0)
+	barBg:SetColorTexture(0, 0, 0.75, 0.25)
+	local border = bar:CreateTexture(nil, "OVERLAY")
+	border:SetTexture("Interface\\PaperDollInfoFrame\\UI-Character-Skills-BarBorder")
+	border:SetSize(274, 27)
+	border:SetPoint("LEFT", -5, 0)
+	bar.text = Text(bar, "GameFontNormalSmall", "LEFT", 6, 1)
+	bar.value = Text(bar, "GameFontHighlightSmall", "LEFT", bar.text, "RIGHT", 13, 0)
 	frame.bar = bar
 
-	-- Search, top left of the list.
-	local search = CreateFrame("EditBox", nil, frame, "InputBoxTemplate")
-	search:SetSize(160, 20)
-	search:SetPoint("TOPLEFT", 78, -54)
+	-- Above the list as in the classic window (Zach 10/11): All with its
+	-- minus to close or open every category, the search box with its
+	-- placeholder, and where Filter sits, when it was shared.
+	local all = CreateFrame("Button", nil, frame)
+	all:SetSize(60, 16)
+	all:SetPoint("TOPLEFT", 16, -58)
+	all.toggle = all:CreateTexture(nil, "ARTWORK")
+	all.toggle:SetSize(16, 16)
+	all.toggle:SetPoint("LEFT")
+	all.text = Text(all, "GameFontNormal", "LEFT", 18, 0)
+	all.text:SetText("Alla")
+	all:SetScript("OnClick", function()
+		local open = false
+		for _, r in ipairs(recipes) do
+			if r.header and not collapsed[r.header] then open = true end
+		end
+		for _, r in ipairs(recipes) do
+			if r.header then collapsed[r.header] = open or nil end
+		end
+		offset = 0
+		ns.RefreshRecipeWindow()
+	end)
+	frame.all = all
+
+	local boxed = HasTemplate("SearchBoxTemplate")
+	local search = CreateFrame("EditBox", nil, frame, boxed and "SearchBoxTemplate" or "InputBoxTemplate")
+	search:SetSize(150, 20)
+	search:SetPoint("TOPLEFT", 92, -56)
 	search:SetAutoFocus(false)
+	if search.Instructions then search.Instructions:SetText("Sök") end
 	search:SetScript("OnEscapePressed", search.ClearFocus)
 	search:SetScript("OnEnterPressed", search.ClearFocus)
-	search:SetScript("OnTextChanged", function(self)
+	search:HookScript("OnTextChanged", function(self)
 		filterText = strtrim(self:GetText() or "")
 		offset = 0
 		ns.RefreshRecipeWindow()
 	end)
-	Text(frame, "GameFontNormalSmall", "RIGHT", search, "LEFT", -8, 0):SetText("Sök")
+	if not boxed then Text(frame, "GameFontNormalSmall", "RIGHT", search, "LEFT", -8, 0):SetText("Sök") end
 	frame.search = search
-	frame.shared = Text(frame, "GameFontDisableSmall", "LEFT", search, "RIGHT", 12, 0)
+	frame.shared = Text(frame, "GameFontDisableSmall", "TOPRIGHT", -18, -61)
+	frame.shared:SetJustifyH("RIGHT")
 
 	-- The list.
 	local list = Inset(frame, "TOPLEFT", 10, -80)
@@ -162,7 +188,7 @@ local function Build()
 		row.selected:SetAllPoints()
 		row.selected:SetColorTexture(0.5, 0.5, 0.5, 0.35)
 		row.toggle = row:CreateTexture(nil, "ARTWORK")
-		row.toggle:SetSize(14, 14)
+		row.toggle:SetSize(16, 16)
 		row.toggle:SetPoint("LEFT", 0, 0)
 		row.text = Text(row, "GameFontNormal", "LEFT", 18, 0)
 		row.text:SetWidth(W - 60)
@@ -211,10 +237,10 @@ local function Build()
 	for i = 1, 8 do
 		local col, row = (i - 1) % 2, math.floor((i - 1) / 2)
 		local b = CreateFrame("Button", nil, detail)
-		b:SetSize(186, 38)
-		b:SetPoint("TOPLEFT", 10 + col * 196, -78 - row * 42)
+		b:SetSize(147, 41)
+		b:SetPoint("TOPLEFT", 8 + col * 152, -78 - row * 43)
 		b.icon = b:CreateTexture(nil, "ARTWORK")
-		b.icon:SetSize(36, 36)
+		b.icon:SetSize(39, 39)
 		b.icon:SetPoint("LEFT", 0, 0)
 		b.count = b:CreateFontString(nil, "OVERLAY", "NumberFontNormal")
 		b.count:SetPoint("BOTTOMRIGHT", b.icon, "BOTTOMRIGHT", -2, 2)
@@ -223,7 +249,7 @@ local function Build()
 		box:SetPoint("BOTTOMRIGHT", 0, 1)
 		box:SetColorTexture(0, 0, 0, 0.45)
 		b.name = Text(b, "GameFontHighlightSmall", "LEFT", b.icon, "RIGHT", 8, 0)
-		b.name:SetWidth(136)
+		b.name:SetWidth(96)
 		b:SetScript("OnEnter", Tooltip)
 		b:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		reagents[i] = b
@@ -239,7 +265,7 @@ local function Build()
 	close:SetPoint("BOTTOMRIGHT", -8, 6)
 	close:SetScript("OnClick", function() frame:Hide() end)
 	frame.whisper = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-	frame.whisper:SetSize(110, 22)
+	frame.whisper:SetSize(90, 22)
 	frame.whisper:SetText("Viska")
 	frame.whisper:SetPoint("RIGHT", close, "LEFT", -4, 0)
 	frame.whisper:SetScript("OnClick", function()
@@ -255,8 +281,9 @@ local function Build()
 	frame.order:SetScript("OnClick", function()
 		if who and selected and selected.key then ns.OrderDialog(who, selected.key) end
 	end)
-	frame.note = Text(frame, "GameFontDisableSmall", "BOTTOMLEFT", 14, 12)
-	frame.note:SetWidth(W - 320)
+	-- Inside the details at the bottom: the buttons take the whole width.
+	frame.note = Text(detail, "GameFontDisableSmall", "BOTTOMLEFT", 10, 6)
+	frame.note:SetWidth(W - 40)
 
 	frame:SetScript("OnUpdate", function(self, elapsed)
 		-- Item names and icons load in the background; show them as they come.
@@ -315,6 +342,11 @@ function ns.RefreshRecipeWindow(quiet)
 	frame.bar.text:SetText(p.label)
 	frame.bar.value:SetText(level and string.format("%d/%d", level.rank, cap) or "")
 	frame.shared:SetText(at and ("Delat " .. ns.Day(at)) or "")
+	local anyOpen = false
+	for _, r in ipairs(recipes) do
+		if r.header and not collapsed[r.header] then anyOpen = true end
+	end
+	frame.all.toggle:SetTexture(anyOpen and "Interface\\Buttons\\UI-MinusButton-Up" or "Interface\\Buttons\\UI-PlusButton-Up")
 
 	for i, row in ipairs(rows) do
 		local r = shown[i + offset]

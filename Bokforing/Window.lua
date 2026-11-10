@@ -960,7 +960,7 @@ BokforingAPI = {
 	end,
 	Work = function() return ns.WorkSummary() end,
 	-- For Skatteverket's work orders where he sends the materials.
-	ShopForOrder = function(name, reagents, crafts, to) ns.ShopForOrder(name, reagents, crafts, to) end,
+	ShopForOrder = function(name, reagents, crafts, to, total) ns.ShopForOrder(name, reagents, crafts, to, total) end,
 	Refresh = function() if ns.Refresh then ns.Refresh() end end,
 }
 

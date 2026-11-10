@@ -13,6 +13,8 @@
 --        from before 0.28 the same standing
 --        last restart (0.27.1): the newest version whose update needs a game
 --        restart, so an older client can say restart or /reload
+--        12th field (0.29): "1" from the guild leader's account, which runs
+--        a version before it is published; no update popup from it
 --                                                           a member's standing; "-" when
 --                                                           Swedbank is not running (0.22)
 --   B                                                       ask the leader for the standings
@@ -38,7 +40,7 @@
 local _, ns = ...
 
 ns.GUILD = "THÖNDERSTÖRM"
-ns.VERSION = "0.28"
+ns.VERSION = "0.30"
 ns.SCHEMA = 10
 ns.PREFIX = "SKATT"
 ns.GOOD_HOURS = 48
@@ -399,9 +401,10 @@ local function SendStatus()
 	dirty = false
 	local debtAge, goodAge = ns.AccountState()
 	local debtDate, goodDate = OldDates(debtAge, goodAge)
-	ns.Send(string.format("T;%s;%d;%d;%d;%d;%s;%s;%s;%d;%d", ns.VERSION, char.lastDeposit or 0, debtDate,
+	if IsGuildLeader() then db.leaderAccount = true end
+	ns.Send(string.format("T;%s;%d;%d;%d;%d;%s;%s;%s;%d;%d;%s", ns.VERSION, char.lastDeposit or 0, debtDate,
 		goodDate, char.paid > 0 and 1 or 0, ns.SwedbankVersion(), ns.BokforingVersion(), ns.LastRestart(),
-		math.floor(debtAge), math.floor(goodAge)))
+		math.floor(debtAge), math.floor(goodAge), db.leaderAccount and "1" or ""))
 	SendPrivate()
 end
 ns.SendStatus = SendStatus
@@ -779,10 +782,14 @@ end
 
 
 local function OnPublic(sender, parts)
-	CheckVersion(parts[2], parts[7], parts[8], parts[9])
+	-- The leader installs before publishing (Zach 10/11): his account's
+	-- versions are not in WowUp yet, so they raise no popup.
+	local leaderAccount = parts[12] == "1" or sender == ns.Leader()
+	if not leaderAccount then CheckVersion(parts[2], parts[7], parts[8], parts[9]) end
 	if sender == ns.Me() then return end
 	local m = db.members[sender] or { firstSeen = time() }
 	db.members[sender] = m
+	m.leaderAccount = leaderAccount or nil
 	m.version = parts[2]
 	m.lastDeposit = tonumber(parts[3]) or 0
 	local debt, good = tonumber(parts[4]) or 0, tonumber(parts[5]) or 0
@@ -804,7 +811,7 @@ local function OnBoard(parts)
 	local me = ns.Me()
 	for i = 2, #parts do
 		local name, lastDeposit, debtSince, lastSeen, goodSince, hasPaid, version, swed, bok, debtAge, goodAge = strsplit(",", parts[i])
-		CheckVersion(version, swed, bok)
+		if name ~= ns.Leader() then CheckVersion(version, swed, bok) end
 		lastSeen = tonumber(lastSeen)
 		if name and lastSeen and name ~= me then
 			local m = db.members[name]

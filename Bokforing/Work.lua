@@ -56,7 +56,8 @@ local function Lines()
 			local left = p.order and p.crafts or p.crafts - made
 			table.insert(lines, { label = p.order and string.format("To send to %s", p.order) or string.format("For the %d crafts left", left) })
 			for _, r in ipairs(Reagents(p)) do
-				local need, have = r[2] * left, Count(r[1])
+				-- Rounded: an order's raw materials are kept per craft as fractions.
+				local need, have = math.floor(r[2] * left + 0.5), Count(r[1])
 				table.insert(lines, { item = r[1], need = need, have = have, missing = math.max(0, need - have) })
 			end
 			local buy = {}

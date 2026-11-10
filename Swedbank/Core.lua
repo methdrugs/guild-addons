@@ -31,7 +31,7 @@
 local _, ns = ...
 
 ns.GUILD = "THÖNDERSTÖRM"
-ns.VERSION = "0.11"
+ns.VERSION = "0.12"
 -- The lowest weekly rate a member may ask for (Zach 10/11).
 ns.MIN_RATE = 0.03
 ns.SCHEMA = 2
@@ -458,6 +458,7 @@ SwedbankPanel.VERSION = ns.VERSION
 function SwedbankPanel.HasLoan() return ns.HasLoan() end
 function SwedbankPanel.LeaderTodo() return ns.LeaderTodo() end
 function SwedbankPanel.OwedBy(name) return ns.OwedBy(name) end
+function SwedbankPanel.Unchecked() return ns.Unchecked() end
 
 -- /swedbank opens the panel on the Swedbank tab, /swedbank nytt on Nytt.
 SlashCmdList.SWEDBANK = function(msg)

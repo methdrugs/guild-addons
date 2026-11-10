@@ -16,6 +16,9 @@
 --   D;id;state;reason;stamp     a new state: accepterad, klar, avböjd, avbruten
 --   L;id;item:count,...;stamp   the orderer's materials sent so far, by mail
 --        or trade (Zach 10/11); also the 14th field of O
+--   O, 15th field (0.30): raw materials item:count,... sent in place of the
+--        recipe's reagents; 16th: what the crafter makes of them first,
+--        item:crafts,... (Zach 10/11)
 -- Guild channel:
 --   X        at login: send me my orders; whoever holds some answers by whisper
 
@@ -64,9 +67,36 @@ local function DecodeSent(text, into)
 	return into
 end
 
+-- An ordered list "item:count,..." for raw materials and steps.
+local function EncodeList(list, field)
+	local out = {}
+	for _, r in ipairs(list or {}) do table.insert(out, r.itemID .. ":" .. r[field]) end
+	return table.concat(out, ",")
+end
+
+local function DecodeList(text, field)
+	if not text or text == "" then return end
+	local out = {}
+	for item, n in text:gmatch("(%d+):(%d+)") do table.insert(out, { itemID = tonumber(item), [field] = tonumber(n) }) end
+	return #out > 0 and out or nil
+end
+
+-- What the orderer sends in all, { itemID, need }: the raw materials when
+-- the order has them (0.30), otherwise the recipe's reagents times count.
+local function Reagents(o)
+	local out = {}
+	if o.raw then
+		for _, r in ipairs(o.raw) do table.insert(out, { itemID = r.itemID, need = r.count }) end
+		return out
+	end
+	local d = ns.RecipeData and ns.RecipeData(o.key)
+	for _, r in ipairs(d and d.reagents or {}) do table.insert(out, { itemID = r.itemID, need = r.count * o.count }) end
+	return out
+end
+
 local function Pack(o)
 	return table.concat({ "O", o.id, o.from, o.to, o.key, o.count, o.mats, o["until"], o.stamp, o.state, o.reason or "", Clean(o.note), o.tip or "",
-		EncodeSent(o.sent) }, ";")
+		EncodeSent(o.sent), EncodeList(o.raw, "count"), EncodeList(o.steps, "crafts") }, ";")
 end
 
 -- To the other party, and to the leader who keeps it for the offline.
@@ -113,7 +143,7 @@ local function ReagentCost(key, count)
 	return total
 end
 
-function ns.PlaceOrder(to, key, count, mats, days, note)
+function ns.PlaceOrder(to, key, count, mats, days, note, raw, steps)
 	local me = ns.Me()
 	if not me or not to or to == me or ns.Locked() then return end
 	if not ns.IsCitizen(to) then
@@ -123,6 +153,7 @@ function ns.PlaceOrder(to, key, count, mats, days, note)
 	local now = ns.Now()
 	local o = { id = string.format("%x%03x", now, math.random(0, 4095)), from = me, to = to, key = key, count = count, mats = mats,
 		["until"] = now + days * DAY, stamp = now, state = "ny", note = Clean(note), at = now }
+	if mats == "e" and raw then o.raw, o.steps = raw, steps end
 	if mats == "h" then
 		local cost = ReagentCost(key, count)
 		if cost then o.tip = math.floor(cost * TIP) end
@@ -133,18 +164,55 @@ function ns.PlaceOrder(to, key, count, mats, days, note)
 	SendChatMessage(string.format("@%s du har en ny arbetsorder: %s x%d! Titta under Arbetsorder i Yrken (/yrken).", to, RecipeName(key), count), "GUILD")
 	ns.Print(string.format("arbetsorder skickad till %s: %s x%d.", to, RecipeName(key), count))
 	-- Sending the materials (Zach 9/11): Bokföring lists what to buy.
-	local d = ns.RecipeData and ns.RecipeData(key)
-	if mats == "e" and d and d.reagents and BokforingAPI and BokforingAPI.ShopForOrder then
+	-- Raw materials go on the list in all, not per craft (Zach 10/11).
+	if mats == "e" and BokforingAPI and BokforingAPI.ShopForOrder then
 		local reagents = {}
-		for _, r in ipairs(d.reagents) do table.insert(reagents, { r.itemID, r.count }) end
-		BokforingAPI.ShopForOrder(RecipeName(key), reagents, count, to)
+		for _, r in ipairs(Reagents(o)) do table.insert(reagents, { r.itemID, r.need }) end
+		if #reagents > 0 then BokforingAPI.ShopForOrder(RecipeName(key), reagents, count, to, true) end
 	end
 	Changed()
+end
+
+-- A cancelled order's materials already sent (Zach 10/11): the crafter
+-- has them, so they count on the orderer's other open orders to the same crafter
+-- that still need them, oldest first. Done once; the cancelled order keeps
+-- its own count.
+local function MoveSent(o)
+	if o.moved or o.mats ~= "e" or not o.sent or not next(o.sent) then return end
+	o.moved = true
+	local left = {}
+	for item, n in pairs(o.sent) do left[item] = n end
+	local others = {}
+	for _, other in pairs(Orders()) do
+		if other ~= o and other.from == o.from and other.to == o.to and other.mats == "e" and OPEN[State(other)] then
+			table.insert(others, other)
+		end
+	end
+	table.sort(others, function(a, b) return a.at < b.at end)
+	for _, other in ipairs(others) do
+		local moved = {}
+		for _, r in ipairs(Reagents(other)) do
+			other.sent = other.sent or {}
+			local give = math.min(left[r.itemID] or 0, math.max(0, r.need - (other.sent[r.itemID] or 0)))
+			if give > 0 then
+				other.sent[r.itemID] = (other.sent[r.itemID] or 0) + give
+				left[r.itemID] = left[r.itemID] - give
+				table.insert(moved, string.format("%d x %s", give, ns.ItemName(r.itemID) or "?"))
+			end
+		end
+		if #moved > 0 then
+			other.stamp = ns.Now()
+			Share(other, table.concat({ "L", other.id, EncodeSent(other.sent), other.stamp }, ";"))
+			ns.Print(string.format("material från den avbrutna ordern räknas nu på %s x%d till %s: %s.",
+				ns.RecipeName and ns.RecipeName(other.key) or other.key, other.count, other.to, table.concat(moved, ", ")))
+		end
+	end
 end
 
 local function SetState(o, state, reason)
 	o.state, o.reason, o.stamp = state, reason, ns.Now()
 	Share(o, table.concat({ "D", o.id, state, reason or "", o.stamp }, ";"))
+	if state == "avbruten" and o.from == ns.Me() then MoveSent(o) end
 	Changed()
 end
 
@@ -173,6 +241,7 @@ function ns.OnOrder(sender, parts)
 	o.at = old and old.at or ns.Now()
 	-- Sent materials only grow; keep what was known.
 	o.sent = DecodeSent(parts[14], old and old.sent and DecodeSent(EncodeSent(old.sent)) or nil)
+	o.raw, o.steps = DecodeList(parts[15], "count"), DecodeList(parts[16], "crafts")
 	Orders()[o.id] = o
 	Tell(o, old)
 	Changed()
@@ -250,6 +319,24 @@ local function TipText()
 	return cost and string.format("dricks 10 %% av reagenskostnaden, ungefär %s", ns.Money(cost * TIP)) or "dricks 10 % av reagenskostnaden"
 end
 
+-- Skicka råvaror (Zach 10/11): offered when the crafter levels on making
+-- a reagent, ticked from the start; the line says what changes and why.
+local COLOUR_WORD = { o = "orange", y = "gul", g = "grön" }
+local function UpdateRaw()
+	local count = math.max(tonumber(dialog.count:GetText()) or 1, 1)
+	local raw, steps
+	if dialog.mats == "e" and ns.RawPlan then raw, steps = ns.RawPlan(dialog.to, dialog.key, count) end
+	dialog.raw, dialog.steps = raw, steps
+	dialog.rawBox:SetShown(raw ~= nil)
+	if not raw then return end
+	local send, made = {}, {}
+	for _, r in ipairs(raw) do table.insert(send, string.format("%d %s", r.count, ns.ItemName(r.itemID) or "...")) end
+	for _, st in ipairs(steps) do
+		table.insert(made, string.format("%d %s (%s för %s)", st.crafts, ns.ItemName(st.itemID) or "...", COLOUR_WORD[st.colour] or "?", dialog.to))
+	end
+	dialog.rawBox.text:SetText(string.format("Skicka råvaror: %s i stället för %s", table.concat(send, ", "), table.concat(made, ", ")))
+end
+
 -- A classic panel like the other THÖNDERSTÖRM windows (Zach 9/11: the first
 -- was a bare box), with the recipe's icon as portrait.
 local function BuildDialog()
@@ -260,7 +347,7 @@ local function BuildDialog()
 		dialog:SetBackdrop({ bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background", edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
 			tile = true, tileSize = 32, edgeSize = 32, insets = { left = 11, right = 12, top = 12, bottom = 11 } })
 	end
-	dialog:SetSize(380, 360)
+	dialog:SetSize(380, 420)
 	dialog:SetPoint("CENTER")
 	dialog:SetFrameStrata("DIALOG")
 	dialog:SetToplevel(true)
@@ -286,7 +373,10 @@ local function BuildDialog()
 	dialog.count:SetAutoFocus(false)
 	dialog.count:SetNumeric(true)
 	dialog.count:SetMaxLetters(3)
-	dialog.count:SetScript("OnTextChanged", function() if dialog.theirs then dialog.tip:SetText(TipText()) end end)
+	dialog.count:SetScript("OnTextChanged", function()
+		if dialog.theirs then dialog.tip:SetText(TipText()) end
+		if dialog.rawBox then UpdateRaw() end
+	end)
 
 	Label(dialog, "Material", 24, -106)
 	dialog.own = Radio(dialog, "Jag skickar materialet", 136, -100)
@@ -295,16 +385,24 @@ local function BuildDialog()
 	dialog.tip:SetPoint("TOPLEFT", 162, -146)
 	dialog.tip:SetWidth(200)
 	dialog.tip:SetJustifyH("LEFT")
-	dialog.own:SetScript("OnClick", function() dialog.mats = "e" dialog.own:SetChecked(true) dialog.theirs:SetChecked(false) end)
-	dialog.theirs:SetScript("OnClick", function() dialog.mats = "h" dialog.theirs:SetChecked(true) dialog.own:SetChecked(false) end)
+	dialog.own:SetScript("OnClick", function() dialog.mats = "e" dialog.own:SetChecked(true) dialog.theirs:SetChecked(false) UpdateRaw() end)
+	dialog.theirs:SetScript("OnClick", function() dialog.mats = "h" dialog.theirs:SetChecked(true) dialog.own:SetChecked(false) UpdateRaw() end)
+
+	dialog.rawBox = CreateFrame("CheckButton", nil, dialog, "UICheckButtonTemplate")
+	dialog.rawBox:SetSize(24, 24)
+	dialog.rawBox:SetPoint("TOPLEFT", 132, -176)
+	dialog.rawBox.text = dialog.rawBox:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	dialog.rawBox.text:SetPoint("TOPLEFT", dialog.rawBox, "TOPRIGHT", 2, -5)
+	dialog.rawBox.text:SetWidth(200)
+	dialog.rawBox.text:SetJustifyH("LEFT")
 
 	-- How long the one ordering can wait (Zach 9/11).
-	Label(dialog, "Jag kan vänta", 24, -186)
+	Label(dialog, "Jag kan vänta", 24, -242)
 	dialog.waits = {}
 	for k, days in ipairs(WAITS) do
 		local b = CreateFrame("Button", nil, dialog, "UIPanelButtonTemplate")
 		b:SetSize(52, 22)
-		b:SetPoint("TOPLEFT", 136 + (k - 1) * 56, -182)
+		b:SetPoint("TOPLEFT", 136 + (k - 1) * 56, -238)
 		b:SetText(days == 1 and "1 dag" or (days .. " dgr"))
 		b:SetScript("OnClick", function()
 			dialog.days = days
@@ -315,10 +413,10 @@ local function BuildDialog()
 		dialog.waits[k] = b
 	end
 
-	Label(dialog, "Anteckning", 24, -222)
+	Label(dialog, "Anteckning", 24, -278)
 	dialog.note = CreateFrame("EditBox", nil, dialog, "InputBoxTemplate")
 	dialog.note:SetSize(214, 20)
-	dialog.note:SetPoint("TOPLEFT", 140, -218)
+	dialog.note:SetPoint("TOPLEFT", 140, -274)
 	dialog.note:SetAutoFocus(false)
 	dialog.note:SetMaxLetters(80)
 
@@ -340,7 +438,8 @@ local function BuildDialog()
 		if not count or count < 1 then dialog.warn:SetText("Skriv hur många.") return end
 		-- The crafter must know what to expect (Zach 9/11): no default.
 		if not dialog.mats then dialog.warn:SetText("Välj vem som står för materialet.") return end
-		ns.PlaceOrder(dialog.to, dialog.key, count, dialog.mats, dialog.days, dialog.note:GetText())
+		local raw = dialog.mats == "e" and dialog.raw and dialog.rawBox:GetChecked()
+		ns.PlaceOrder(dialog.to, dialog.key, count, dialog.mats, dialog.days, dialog.note:GetText(), raw and dialog.raw or nil, raw and dialog.steps or nil)
 		dialog:Hide()
 	end)
 	dialog:Hide()
@@ -359,6 +458,8 @@ function ns.OrderDialog(to, key)
 	dialog.own:SetChecked(false)
 	dialog.theirs:SetChecked(false)
 	dialog.tip:SetText(TipText())
+	dialog.rawBox:SetChecked(true)
+	UpdateRaw()
 	dialog.note:SetText("")
 	dialog.warn:SetText("")
 	for _, b in ipairs(dialog.waits) do
@@ -371,15 +472,137 @@ end
 -- (Zach 10/11: Yrken should make it clear that they have been sent).
 local function SentStatus(o)
 	if o.mats ~= "e" then return end
-	local d, need, sent = ns.RecipeData and ns.RecipeData(o.key), 0, 0
-	for _, r in ipairs(d and d.reagents or {}) do
-		need = need + r.count * o.count
-		sent = sent + math.min(o.sent and o.sent[r.itemID] or 0, r.count * o.count)
+	local need, sent = 0, 0
+	for _, r in ipairs(Reagents(o)) do
+		need = need + r.need
+		sent = sent + math.min(o.sent and o.sent[r.itemID] or 0, r.need)
 	end
 	if need == 0 then return end
 	if sent >= need then return "|cff40ff40material skickat|r", sent, need end
 	if sent > 0 then return string.format("|cffff8040material %d/%d skickat|r", sent, need), sent, need end
 	return "|cffff4040material inte skickat|r", sent, need
+end
+
+-- Fyll i brev (Zach 10/11): at an open mailbox, address the mail to the
+-- crafter and attach the reagents still missing, splitting a stack to the
+-- exact count. One item a step, a moment apart, since the bag slot is
+-- locked while it moves. Twelve attachments a letter: when it is full he
+-- sends it and presses again for the next. Never presses Send itself.
+local Bag = C_Container or {}
+local filling
+-- The order the last letter was filled for: its materials count there
+-- first, not on an older order to the same crafter (Zach 10/11: 4 Fine
+-- Thread for the new order were counted on an old one).
+local filledFor
+
+local function FindStack(item)
+	local best
+	for bag = 0, NUM_BAG_SLOTS or 4 do
+		for slot = 1, (Bag.GetContainerNumSlots and Bag.GetContainerNumSlots(bag)) or 0 do
+			local info = Bag.GetContainerItemInfo(bag, slot)
+			if info and info.itemID == item and not info.isLocked then
+				-- The smallest stack first, so big ones stay whole.
+				if not best or info.stackCount < best.count then best = { bag = bag, slot = slot, count = info.stackCount } end
+			end
+		end
+	end
+	return best
+end
+
+local function FreeAttachment()
+	for i = 1, ATTACHMENTS_MAX_SEND or 12 do
+		if not GetSendMailItem(i) then return i end
+	end
+end
+
+-- What still has to go in this letter: needed, minus sent, minus attached.
+local function StillMissing(o)
+	local attached = {}
+	for i = 1, ATTACHMENTS_MAX_SEND or 12 do
+		local _, item, _, count = GetSendMailItem(i)
+		if item then attached[item] = (attached[item] or 0) + (count or 1) end
+	end
+	local out = {}
+	for _, r in ipairs(Reagents(o)) do
+		local left = r.need - (o.sent and o.sent[r.itemID] or 0) - (attached[r.itemID] or 0)
+		if left > 0 then table.insert(out, { item = r.itemID, count = left }) end
+	end
+	return out
+end
+
+local function FillStep()
+	local f = filling
+	if not f then return end
+	if not (MailFrame and MailFrame:IsShown()) then filling = nil return end
+	local missing = StillMissing(f.order)
+	local nextItem
+	for _, m in ipairs(missing) do
+		if not f.lacking[m.item] then nextItem = m break end
+	end
+	if not nextItem then
+		filling = nil
+		local short = {}
+		for item, n in pairs(f.lacking) do table.insert(short, string.format("%d x %s", n, ns.ItemName(item) or "?")) end
+		if #short > 0 then
+			ns.Print("finns inte i väskorna: " .. table.concat(short, ", ") .. ". Köp dem och tryck Fyll i brev igen.")
+		end
+		ns.Print("brevet till " .. f.order.to .. " är ifyllt. Kontrollera det och tryck Send.")
+		return
+	end
+	local free = FreeAttachment()
+	if not free then
+		filling = nil
+		ns.Print("brevet är fullt (" .. (ATTACHMENTS_MAX_SEND or 12) .. " saker). Tryck Send och sedan Fyll i brev igen för nästa brev.")
+		return
+	end
+	local stack = FindStack(nextItem.item)
+	if not stack then
+		f.lacking[nextItem.item] = nextItem.count
+	elseif not CursorHasItem() then
+		if stack.count > nextItem.count then
+			Bag.SplitContainerItem(stack.bag, stack.slot, nextItem.count)
+		else
+			Bag.PickupContainerItem(stack.bag, stack.slot)
+		end
+		ClickSendMailItemButton(free)
+		-- Not taken (a wrong item, a soulbound one): put it back, do not loop.
+		if CursorHasItem() then
+			ClearCursor()
+			f.lacking[nextItem.item] = nextItem.count
+		end
+	end
+	C_Timer.After(0.4, FillStep)
+end
+
+local function FillMail(o)
+	if not (MailFrame and MailFrame:IsShown()) then
+		ns.Print("gå till en brevlåda, öppna arbetsordern och tryck Fyll i brev.")
+		return
+	end
+	if CursorHasItem() then ns.Print("släpp det du håller i först.") return end
+	if not Bag.GetContainerItemInfo or not ClickSendMailItemButton then return end
+	if #StillMissing(o) == 0 then ns.Print("allt material till den här ordern är redan skickat eller bifogat.") return end
+	if MailFrameTab_OnClick then MailFrameTab_OnClick(nil, 2) end
+	SendMailNameEditBox:SetText(o.to)
+	if SendMailSubjectEditBox then SendMailSubjectEditBox:SetText(string.format("Arbetsorder: %s x%d", RecipeName(o.key), o.count)) end
+	filling = { order = o, lacking = {} }
+	filledFor = o
+	FillStep()
+end
+
+-- Avbryt asks first (Zach 10/11), so a stray click cancels nothing.
+StaticPopupDialogs["SKATTEVERKET_CANCEL_ORDER"] = {
+	text = "Avbryta arbetsordern %s till %s?",
+	button1 = YES or "Ja",
+	button2 = NO or "Nej",
+	OnAccept = function(_, data) data.done() end,
+	timeout = 0,
+	whileDead = true,
+	hideOnEscape = true,
+}
+
+local function ConfirmCancel(o, done)
+	StaticPopup_Show("SKATTEVERKET_CANCEL_ORDER", string.format("%s x%d", RecipeName(o.key), o.count), o.to, { done = done })
 end
 
 -- The order itself (member feedback 10/11): clicked open from the list,
@@ -505,17 +728,28 @@ ShowOrder = function(o)
 	-- One line a reagent (Zach 10/11: names showed as "..." while loading;
 	-- the view is drawn again when they arrive), and what has been sent.
 	view.waiting = false
-	if d and d.reagents and #d.reagents > 0 then
-		table.insert(lines, "|cffffd100Reagenser:|r")
-		for _, r in ipairs(d.reagents) do
+	local list = Reagents(o)
+	if #list > 0 then
+		table.insert(lines, o.raw and "|cffffd100Råvaror|r (i stället för färdiga reagenser, så att hantverkaren får poäng):" or "|cffffd100Reagenser:|r")
+		for _, r in ipairs(list) do
 			local name = ns.ItemName(r.itemID)
 			if not name then view.waiting = true end
-			local need = r.count * o.count
+			local need = r.need
 			local sent = o.mats == "e" and (o.sent and o.sent[r.itemID] or 0)
 			local mark = sent and (sent >= need and string.format("  |cff40ff40skickat %d/%d|r", sent, need)
 				or string.format("  |cffff8040skickat %d/%d|r", sent, need)) or ""
 			table.insert(lines, string.format("   %d x %s%s", need, name or "|cff808080laddar...|r", mark))
 		end
+	end
+	-- What the crafter makes of the raw materials first (0.30).
+	if o.steps then
+		local made = {}
+		for _, st in ipairs(o.steps) do
+			local name = ns.ItemName(st.itemID)
+			if not name then view.waiting = true end
+			table.insert(made, string.format("%d x %s", st.crafts, name or "..."))
+		end
+		table.insert(lines, "|cffffd100Görs först:|r " .. table.concat(made, ", "))
 	end
 	table.insert(lines, "|cffffd100Kommentar:|r " .. ((o.note and o.note ~= "") and o.note or "|cff808080ingen|r"))
 	table.insert(lines, "|cffffd100Status:|r " .. STATE[state] .. (o.reason and (" (" .. o.reason .. ")") or ""))
@@ -533,8 +767,10 @@ ShowOrder = function(o)
 		ViewButton(view.a, "Avböj", function(self) ns.DeclineOrder(self, o) end)
 		ViewButton(view.b, "Klar", After("klar"))
 	elseif not incoming and OPEN[state] then
-		ViewButton(view.a, nil)
-		ViewButton(view.b, "Avbryt", After("avbruten"))
+		-- His materials, not all sent yet: fill the letter (Zach 10/11).
+		local _, sent, need = SentStatus(o)
+		ViewButton(view.a, (sent and sent < need) and "Fyll i brev" or nil, function() FillMail(o) end)
+		ViewButton(view.b, "Avbryt", function() ConfirmCancel(o, After("avbruten")) end)
 	else
 		ViewButton(view.a, nil)
 		ViewButton(view.b, nil)
@@ -569,18 +805,20 @@ local function Matches(target, name)
 	return target == name or name:match("^(%S+)") == target
 end
 
-local function Delivered(target, items)
+local function Delivered(target, items, prefer)
 	local me, list = ns.Me(), {}
 	for _, o in pairs(Orders()) do
 		if o.from == me and o.mats == "e" and OPEN[State(o)] and Matches(target, o.to) then table.insert(list, o) end
 	end
-	table.sort(list, function(a, b) return a.at < b.at end)
+	table.sort(list, function(a, b)
+		if (a == prefer) ~= (b == prefer) then return a == prefer end
+		return a.at < b.at
+	end)
 	for _, o in ipairs(list) do
-		local d = ns.RecipeData and ns.RecipeData(o.key)
 		local counted = {}
-		for _, r in ipairs(d and d.reagents or {}) do
+		for _, r in ipairs(Reagents(o)) do
 			o.sent = o.sent or {}
-			local need = r.count * o.count - (o.sent[r.itemID] or 0)
+			local need = r.need - (o.sent[r.itemID] or 0)
 			local give = math.min(items[r.itemID] or 0, math.max(0, need))
 			if give > 0 then
 				o.sent[r.itemID] = (o.sent[r.itemID] or 0) + give
@@ -607,7 +845,8 @@ if SendMail then
 			local _, item, _, count = GetSendMailItem(i)
 			if item then items[item] = (items[item] or 0) + (count or 1) end
 		end
-		pendingMail = next(items) and { to = target, items = items } or nil
+		local prefer = filledFor and Matches(target, filledFor.to) and filledFor or nil
+		pendingMail = next(items) and { to = target, items = items, prefer = prefer } or nil
 	end)
 end
 
@@ -633,7 +872,7 @@ end
 tracker:SetScript("OnEvent", function(_, event, a, b)
 	if not ns.db then return end
 	if event == "MAIL_SEND_SUCCESS" then
-		if pendingMail then Delivered(pendingMail.to, pendingMail.items) end
+		if pendingMail then Delivered(pendingMail.to, pendingMail.items, pendingMail.prefer) end
 		pendingMail = nil
 	elseif event == "MAIL_FAILED" then
 		pendingMail = nil
@@ -656,6 +895,47 @@ end)
 
 local page, rows, offset = nil, {}, 0
 local ROWS, ROW_H = 16, 22
+-- Columns: x and width. Item (after the icon), the other party, the step word.
+local COLS = { { 24, 112 }, { 140, 68 }, { 252, 72 } }
+local STEPS_X = 212
+-- The steps (Zach 10/11): grey ordered, yellow bought, blue sent, green done.
+local GREY, YELLOW, BLUE, GREEN, RED = { 0.6, 0.6, 0.6 }, { 1, 0.82, 0 }, { 0.3, 0.6, 1 }, { 0.25, 1, 0.25 }, { 1, 0.25, 0.25 }
+local EMPTY = { 0.22, 0.22, 0.22 }
+
+local function Hex(c)
+	return string.format("|cff%02x%02x%02x", c[1] * 255, c[2] * 255, c[3] * 255)
+end
+
+local function InBags(item)
+	if C_Item and C_Item.GetItemCount then return C_Item.GetItemCount(item, false) or 0 end
+	return GetItemCount and GetItemCount(item, false) or 0
+end
+
+-- Where an order stands: steps filled (0 for a closed one), the word and
+-- its colour. The orderer's materials take four steps: ordered, bought
+-- (everything not yet sent is in his bags), sent, done; the crafter sees
+-- received for sent. The crafter's own materials take three: ordered,
+-- accepted, done.
+local function Stage(o, incoming)
+	local state = State(o)
+	if not OPEN[state] and state ~= "klar" then return 0, 0, STATE[state], RED end
+	if o.mats ~= "e" then
+		if state == "klar" then return 3, 3, "Klar", GREEN end
+		if state == "accepterad" then return 2, 3, "Accepterad", BLUE end
+		return 1, 3, "Beställd", GREY
+	end
+	if state == "klar" then return 4, 4, "Klar", GREEN end
+	local need, sent, ready = 0, 0, true
+	for _, r in ipairs(Reagents(o)) do
+		local n, got = r.need, math.min(o.sent and o.sent[r.itemID] or 0, r.need)
+		need, sent = need + n, sent + got
+		if not incoming and InBags(r.itemID) < n - got then ready = false end
+	end
+	if need > 0 and sent >= need then return 3, 4, incoming and "Mottaget" or "Skickat", BLUE end
+	if sent > 0 then return 2, 4, string.format("%s %d/%d", incoming and "Mottaget" or "Skickat", sent, need), YELLOW end
+	if not incoming and need > 0 and ready then return 2, 4, "Köpt", YELLOW end
+	return 1, 4, "Beställd", GREY
+end
 
 local function Act(o, state, reason)
 	SetState(o, state, reason)
@@ -691,16 +971,35 @@ function ns.BuildOrders(parent)
 		local row = CreateFrame("Frame", nil, parent)
 		row:SetSize(400, ROW_H)
 		row:SetPoint("TOPLEFT", 20, -90 - (i - 1) * ROW_H)
+		-- Headers and Bokföring's own work: one line across.
 		row.text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 		row.text:SetPoint("LEFT", 4, 0)
-		row.text:SetWidth(230)
+		row.text:SetWidth(320)
 		row.text:SetJustifyH("LEFT")
 		row.text:SetWordWrap(false)
-		row.a = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-		row.a:SetSize(76, 20)
-		row.a:SetPoint("RIGHT", -84, 0)
+		-- An order in columns (Zach 10/11): item, the other party, the steps
+		-- as coloured squares, the step in a word, one button.
+		row.icon = row:CreateTexture(nil, "ARTWORK")
+		row.icon:SetSize(16, 16)
+		row.icon:SetPoint("LEFT", 4, 0)
+		row.cells = {}
+		for c, col in ipairs(COLS) do
+			local fs = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+			fs:SetPoint("LEFT", col[1], 0)
+			fs:SetWidth(col[2])
+			fs:SetJustifyH("LEFT")
+			fs:SetWordWrap(false)
+			row.cells[c] = fs
+		end
+		row.steps = {}
+		for k = 1, 4 do
+			local t = row:CreateTexture(nil, "ARTWORK")
+			t:SetSize(7, 7)
+			t:SetPoint("LEFT", STEPS_X + (k - 1) * 9, 0)
+			row.steps[k] = t
+		end
 		row.b = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-		row.b:SetSize(76, 20)
+		row.b:SetSize(66, 20)
 		row.b:SetPoint("RIGHT", -4, 0)
 		row:EnableMouse(true)
 		row:SetScript("OnEnter", function(self)
@@ -729,6 +1028,10 @@ function ns.BuildOrders(parent)
 		offset = math.max(0, offset - delta * 3)
 		ns.RefreshOrders()
 	end)
+	-- Köpt follows the bags while the page is open.
+	local bags = CreateFrame("Frame", nil, parent)
+	bags:RegisterEvent("BAG_UPDATE_DELAYED")
+	bags:SetScript("OnEvent", function() if parent:IsVisible() then ns.RefreshOrders() end end)
 end
 
 local function Button(b, label, onClick)
@@ -747,7 +1050,7 @@ function ns.RefreshOrders()
 	if not page then return end
 	local me = ns.Me()
 	local lines = {}
-	for _, section in ipairs({ { "to", "Till dig" }, { "from", "Från dig" } }) do
+	for _, section in ipairs({ { "to", "Till dig", "Beställare" }, { "from", "Från dig", "Hantverkare" } }) do
 		local list = {}
 		for _, o in pairs(Orders()) do
 			if o[section[1]] == me then table.insert(list, o) end
@@ -758,7 +1061,7 @@ function ns.RefreshOrders()
 			return a.at > b.at
 		end)
 		if #list > 0 then
-			table.insert(lines, { header = section[2] })
+			table.insert(lines, { header = section[2], who = section[3] })
 			for _, o in ipairs(list) do table.insert(lines, { order = o, incoming = section[1] == "to" }) end
 		end
 	end
@@ -778,36 +1081,49 @@ function ns.RefreshOrders()
 			local w = line.work
 			row.text:SetText(string.format("|cffffffff%s|r  %d av %d gjorda%s", w.name, w.made, w.crafts,
 				w.missing > 0 and string.format(", |cffff4040%d reagenser saknas|r", w.missing) or ""))
-			Button(row.a, nil)
+			row.icon:Hide()
+			for _, t in ipairs(row.steps) do t:Hide() end
+			for _, fs in ipairs(row.cells) do fs:SetText("") end
 			Button(row.b, "Bokföring", function() BokforingAPI.ShowWork() end)
 			row:Show()
 		elseif line.header then
+			-- The section, with the column names in grey.
 			row.text:SetText("|cffffd100" .. line.header .. "|r")
-			row.a:Hide()
+			row.icon:Hide()
+			for _, t in ipairs(row.steps) do t:Hide() end
+			row.cells[1]:SetText("")
+			row.cells[2]:SetText("|cff808080" .. (line.who or "") .. "|r")
+			row.cells[3]:SetText(line.who and "|cff808080Steg|r" or "")
 			row.b:Hide()
 			row:Show()
 		else
 			local o, state = line.order, State(line.order)
-			local who = line.incoming and o.from or o.to
-			local colour = OPEN[state] and "|cffffffff" or "|cff808080"
-			-- To the crafter: whose materials, in their words.
-			local mats = line.incoming and (o.mats == "e" and "deras material, " or ("ditt material" .. (o.tip and (" +" .. ns.Money(o.tip)) or "") .. ", ")) or ""
-			-- Materials the orderer sends: how far along, while the order is open.
-			local status = OPEN[state] and SentStatus(o)
-			if status then mats = (line.incoming and "" or mats) .. status .. ", " end
-			row.text:SetText(string.format("%s%s x%d|r  %s, %s%s", colour, RecipeName(o.key), o.count, who, mats, STATE[state]:lower()))
+			local d = ns.RecipeData and ns.RecipeData(o.key)
+			row.text:SetText("")
+			row.icon:SetTexture((d and d.icon) or "Interface\\Icons\\INV_Misc_QuestionMark")
+			row.icon:SetDesaturated(not OPEN[state] and state ~= "klar")
+			row.icon:Show()
+			row.cells[1]:SetText(string.format("%s%s x%d|r", (OPEN[state] or state == "klar") and "|cffffffff" or "|cff808080", RecipeName(o.key), o.count))
+			-- The other party; the crafter in green once they have accepted.
+			-- First names fit (Zach 10/11); the full name is in the tooltip.
+			local who = (line.incoming and o.from or o.to):match("^(%S+)")
+			local accepted = not line.incoming and (state == "accepterad" or state == "klar")
+			row.cells[2]:SetText((accepted and Hex(GREEN) or "|cffffffff") .. who .. "|r")
+			local filled, total, word, colour = Stage(o, line.incoming)
+			for k, t in ipairs(row.steps) do
+				local c = k <= filled and colour or EMPTY
+				t:SetColorTexture(c[1], c[2], c[3])
+				t:SetShown(k <= total)
+			end
+			row.cells[3]:SetText(Hex(colour) .. word .. "|r")
+			-- One button a row; declining an accepted order is in the order.
 			if line.incoming and state == "ny" then
-				-- Accepted only from the opened order, after reading it.
-				Button(row.a, nil)
 				Button(row.b, "Öppna", function() ShowOrder(o) end)
 			elseif line.incoming and state == "accepterad" then
-				Button(row.a, "Avböj", function(self) Decline(self, o) end)
 				Button(row.b, "Klar", function() Act(o, "klar") end)
 			elseif not line.incoming and OPEN[state] then
-				Button(row.a, nil)
-				Button(row.b, "Avbryt", function() Act(o, "avbruten") end)
+				Button(row.b, "Avbryt", function() ConfirmCancel(o, function() Act(o, "avbruten") end) end)
 			else
-				Button(row.a, nil)
 				Button(row.b, nil)
 			end
 			row:Show()

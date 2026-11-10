@@ -12,6 +12,17 @@ local _, ns = ...
 -- enough, "restart" when the release adds files the game only reads at
 -- start; shown in red under the version.
 ns.NOTES = {
+	{ "0.30", "2026-11-10", after = "reload", {
+		"Arbetsorder: avbryter du en order räknas materialet du redan skickat på dina andra öppna ordrar till samma hantverkare som behöver det. Listan visar bara förnamnet; hela namnet syns när du håller muspekaren över raden.",
+		"Arbetsorder: material i ett brev som Fyll i brev har fyllt i räknas på den ordern först, inte på en äldre order till samma hantverkare.",
+		"Arbetsorder: gör hantverkaren själv en av reagenserna och ger det fortfarande poäng (orange, gul eller grön för hen), föreslår ordern att du skickar råvarorna i stället, till exempel Wool Cloth i stället för Bolt of Woolen Cloth. Rutan är ikryssad från början och går att kryssa ur. Fyll i brev, stegen, det som räknas som skickat och Bokförings inköpslista går då efter råvarorna, och ordern visar vad hantverkaren gör först.",
+		"Arbetsorder: när du själv skickar materialet har ordern en knapp Fyll i brev. Öppna en brevlåda, öppna ordern och tryck: brevet adresseras till hantverkaren och det material som saknas läggs i, delat till exakt antal. Du kontrollerar och trycker Send själv. Får inte allt plats i ett brev (12 saker), skicka det och tryck igen för nästa; det som inte finns i väskorna står i chatten.",
+		"Arbetsorder: listan i kolumner, med steg i färg: Beställd (grått), Köpt (gult, allt material ligger i dina väskor), Skickat (blått, hos hantverkaren Mottaget), Klar (grönt). Hantverkarens namn blir grönt när ordern är accepterad. Står hantverkaren för materialet: Beställd, Accepterad, Klar.",
+		"Yrken: fönstret med någons recept har samma mått som spelets eget yrkesfönster: smalare, den blå färdighetsraden som i originalet, rader och reagensrutor i samma storlek.",
+		"Arbetsorder: Avbryt frågar först, så att ett felklick inte avbryter något. Avböj en accepterad order gör du inne i ordern.",
+		"Rutan om en ny version visas först när den finns i WowUp, inte redan när guildledaren har testat den.",
+		"Bokföring 0.6.2: myntet för att hämta sålda auktioner syns bara i inkorgen, inte under Send Mail.",
+	} },
 	{ "0.28", "2026-11-10", after = "reload", {
 		"Ställningen räknas nu i speltid, inte i dagar: obetald skatt åldras bara medan du är inloggad, så en ledig helg kostar ingenting. God: upp till 8 timmars speltid med obetald skatt. Neutral: 8 till 12 timmar. Negativ: mer än 12 timmar.",
 		"Alla dina karaktärer på samma konto räknas tillsammans: den bästa ställningen gäller för alla, så länge den karaktären har betalat skatt någon gång. En alt drar aldrig ned din main.",

@@ -123,6 +123,19 @@ function ns.OwedBy(name)
 	return total
 end
 
+-- Reported guild bank payments the bank log has not confirmed yet, for the
+-- bank line of the window (Zach 10/11): how many, and how much.
+function ns.Unchecked()
+	if not IsGuildLeader() or not ns.db or not ns.db.loans then return 0, 0 end
+	local count, total = 0, 0
+	for _, loan in pairs(Loans()) do
+		for _, p in ipairs(loan.payments or {}) do
+			if p.verified == false then count, total = count + 1, total + p.amount end
+		end
+	end
+	return count, total
+end
+
 function ns.LeaderTodo()
 	if not IsGuildLeader() or not ns.db or not ns.db.loans then return 0, 0, 0 end
 	local pending, overdue = 0, 0
@@ -767,6 +780,7 @@ end
 function ns.RefreshBanker()
 	-- The bolt's to-do badge follows every change to the loans.
 	if SkatteverketAPI and SkatteverketAPI.RefreshTodo then SkatteverketAPI.RefreshTodo() end
+	if SkatteverketAPI and SkatteverketAPI.RefreshBank then SkatteverketAPI.RefreshBank() end
 	if not frame or not frame:IsShown() then return end
 	for i, name in ipairs(TABS) do
 		if name == tab then
