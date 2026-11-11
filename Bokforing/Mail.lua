@@ -34,15 +34,17 @@ local function SoldMails()
 	local pattern = SoldPattern()
 	for i = 1, GetInboxNumItems() do
 		local _, _, _, subject, money, _, daysLeft, itemCount = GetInboxHeaderInfo(i)
-		local invoiceType, itemName, count
+		local invoiceType, itemName, count, deposit
 		if GetInboxInvoiceInfo then
 			local info = { GetInboxInvoiceInfo(i) }
-			invoiceType, itemName, count = info[1], info[2], info[11]
+			invoiceType, itemName, count, deposit = info[1], info[2], info[11], info[6]
 		end
 		local fromSubject = subject and subject:match(pattern)
 		if not invoiceType and fromSubject then invoiceType, itemName = "seller", fromSubject end
 		if invoiceType == "seller" and money and money > 0 and (itemCount or 0) == 0 then
-			table.insert(out, { index = i, item = itemName, count = count or 1, money = money,
+			-- The deposit back is his own money; the rest pays guild tax
+			-- (Tungan Lingonsson 11/11).
+			table.insert(out, { index = i, item = itemName, count = count or 1, money = (money - (deposit or 0)) * (1 - ns.TaxRate()), gross = money,
 				key = Seen(subject, money, itemName, daysLeft) })
 		end
 	end
@@ -92,7 +94,7 @@ local function Note(mails, store, counts, now)
 		local m = first[key]
 		for _ = had + 1, n do
 			store[m.item] = store[m.item] or {}
-			table.insert(store[m.item], { at = now, count = m.count, money = m.money })
+			table.insert(store[m.item], { at = now, count = m.count, money = m.money, taxed = true })
 		end
 		db.salesSeenN[key] = math.max(had, n)
 		db.salesSeen[key] = db.salesSeen[key] or now
@@ -167,7 +169,7 @@ local function CollectNext()
 		ns.Print(string.format("collected %s from sold auctions; other mail left as it was.", ns.Money(taken)))
 		return
 	end
-	taken = taken + m.money
+	taken = taken + m.gross
 	TakeInboxMoney(m.index)
 	C_Timer.After(0.4, CollectNext)
 end

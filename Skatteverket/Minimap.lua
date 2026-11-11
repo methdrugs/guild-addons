@@ -85,8 +85,14 @@ function ns.Todo()
 			table.insert(out, { text = string.format("Ge %s rangen %s", name, ns.CITIZEN_RANK), click = function() ns.PromoteToCitizen(name) end })
 		end
 	end
+	-- An update waiting (Zach 11/11): Nytt says what.
+	local behind = ns.Behind and ns.Behind() or {}
+	if #behind > 0 then
+		table.insert(out, { text = "Uppdatera: " .. table.concat(behind, ", "), click = function() ns.ShowTab(4) end, update = true })
+	end
 	-- Who left while he was away (Zach 10/11).
 	for _, t in ipairs(ns.LeaverTodo and ns.LeaverTodo() or {}) do table.insert(out, t) end
+	for _, t in ipairs(ns.OrderNotices and ns.OrderNotices() or {}) do table.insert(out, t) end
 	local orders = ns.OrdersToDo and ns.OrdersToDo() or 0
 	if orders > 0 then
 		table.insert(out, { text = string.format("%d arbetsorder%s väntar på dig", orders, orders == 1 and "" or "ar"), click = function() ns.ShowTab(8) end })
@@ -96,10 +102,20 @@ end
 
 function ns.RefreshTodo()
 	if not button or not button.notice then return end
-	-- Orders have their own hammer; the ! is for the rest.
-	local others = 0
+	-- Orders have their own hammer and an update Nytt's note (Zach 11/11:
+	-- not the !); the ! is for the rest.
+	local others, update = 0, false
 	for _, t in ipairs(ns.Todo()) do
-		if not t.text:find("arbetsorder") then others = others + 1 end
+		if t.update then update = true
+		elseif not t.text:find("arbetsorder") then others = others + 1 end
+	end
+	-- /skatt ikontest shows it too, to see it without an update.
+	update = update or test ~= nil
+	button.update:SetShown(update)
+	if update then
+		if not button.updatePulse:IsPlaying() then button.updatePulse:Play() end
+	else
+		button.updatePulse:Stop()
 	end
 	button.notice:SetShown(others > 0)
 	if others > 0 then
@@ -217,9 +233,10 @@ function ns.IconTest()
 		ns.Print("ikontest av; knappen visar din ställning igen.")
 	else
 		test = 1
-		ns.Print("ikontest: klicka på minimapknappen för att se God, Neutral, Negativ och Ej godkänd. /skatt ikontest igen för att sluta.")
+		ns.Print("ikontest: klicka på minimapknappen för att se God, Neutral, Negativ och Ej godkänd; lappen nere till vänster är uppdateringen. /skatt ikontest igen för att sluta.")
 	end
 	ns.RefreshMinimap()
+	ns.RefreshTodo()
 end
 
 function ns.BuildMinimap()
@@ -304,6 +321,21 @@ function ns.BuildMinimap()
 	noticeFade:SetDuration(0.7)
 	noticeFade:SetSmoothing("IN_OUT")
 	button.notice, button.noticePulse = notice, noticePulse
+	-- Nytt's note while an update waits (Zach 11/11), slow and soft.
+	local update = button:CreateTexture(nil, "OVERLAY", nil, 2)
+	update:SetTexture("Interface\\Icons\\INV_Misc_Note_01")
+	update:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+	update:SetSize(13, 13)
+	update:SetPoint("BOTTOMLEFT", 2, 3)
+	update:Hide()
+	local updatePulse = update:CreateAnimationGroup()
+	updatePulse:SetLooping("BOUNCE")
+	local updateFade = updatePulse:CreateAnimation("Alpha")
+	updateFade:SetFromAlpha(0.55)
+	updateFade:SetToAlpha(1)
+	updateFade:SetDuration(1.4)
+	updateFade:SetSmoothing("IN_OUT")
+	button.update, button.updatePulse = update, updatePulse
 	Place()
 	ns.RefreshMinimap()
 	ns.RefreshOrderBadge()

@@ -86,7 +86,7 @@ local function Candidates()
 		local price, age = ns.AH(item)
 		local sold = ns.SoldPerDay(item) or 0
 		if level and days >= FLIP_DAYS and price and age == 0 and sold >= FLIP_SOLD and price <= level * (1 - FLIP_UNDER) then
-			local each = level * (1 - ns.CUT) - price
+			local each = ns.Keep(level) - price
 			if each > 0 then
 				local n = math.max(1, math.floor(sold * SHARE))
 				local when = When(item)

@@ -455,13 +455,139 @@ local function Build()
 	search:SetSize(170, 20)
 	search:SetPoint("TOPLEFT", 300, -60)
 	search:SetAutoFocus(false)
-	search:HookScript("OnTextChanged", function(self)
+	-- Drawn a moment after the last key, not on every key (Zach 11/11).
+	local typedAt = 0
+	search:HookScript("OnTextChanged", function(self, typed)
 		local text = strtrim(self:GetText() or ""):lower()
+		if typed and ns.Suggest then ns.Suggest(text) end
+		if typed then ns.searchExact = nil end
 		if text == ns.search then return end
 		ns.search, offset = text, 0
-		ns.Refresh()
+		typedAt = GetTime()
+		C_Timer.After(0.3, function()
+			if GetTime() - typedAt >= 0.29 then ns.Refresh() end
+		end)
 	end)
 	frame.search = search
+
+	-- Suggestions (Zach 11/11: "swift" should offer Swiftness Potion):
+	-- up to 8 names where a word starts with what is typed; on Recipes every
+	-- recipe known (his, the guild's, from trainers and vendors) with whether
+	-- he has it, on Market the items followed. Arrows and Enter, or a click.
+	local SUGGEST = 8
+	local drop = CreateFrame("Frame", nil, frame, "BackdropTemplate")
+	drop:SetPoint("TOPLEFT", search, "BOTTOMLEFT", -4, -2)
+	drop:SetSize(300, SUGGEST * 18 + 8)
+	drop:SetFrameStrata("DIALOG")
+	drop:SetBackdrop({ bgFile = "Interface\\Tooltips\\UI-Tooltip-Background", edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		tile = true, tileSize = 16, edgeSize = 14, insets = { left = 3, right = 3, top = 3, bottom = 3 } })
+	drop:SetBackdropColor(0, 0, 0, 0.95)
+	drop:Hide()
+	drop.buttons, drop.pick = {}, 0
+	local function Choose(s)
+		drop:Hide()
+		if s.row and not s.mine then
+			-- Not his: All recipes, and nothing in the boxes that would hide it.
+			mode, profession = "all", nil
+			sellable, skillUps, levelUp, canLearn, needSkill = false, false, false, false, false
+			for _, box in ipairs({ frame.sell, frame.ups, frame.levelBox, frame.canLearn, frame.needSkill }) do box:SetChecked(false) end
+		end
+		search:SetText(s.name)
+		search:ClearFocus()
+		ns.search, ns.searchExact, offset = s.name:lower(), s.row ~= nil, 0
+		ns.Refresh()
+	end
+	local function Mark()
+		for k, b in ipairs(drop.buttons) do
+			if k == drop.pick then b:LockHighlight() else b:UnlockHighlight() end
+		end
+	end
+	for k = 1, SUGGEST do
+		local b = CreateFrame("Button", nil, drop)
+		b:SetSize(292, 18)
+		b:SetPoint("TOPLEFT", 4, -4 - (k - 1) * 18)
+		b:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
+		b.name = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		b.name:SetPoint("LEFT", 4, 0)
+		b.name:SetWidth(190)
+		b.name:SetJustifyH("LEFT")
+		b.name:SetWordWrap(false)
+		b.note = b:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+		b.note:SetPoint("RIGHT", -4, 0)
+		b:SetScript("OnClick", function(self) Choose(self.s) end)
+		drop.buttons[k] = b
+	end
+	local function Word(name, query)
+		return (" " .. name:lower()):find(" " .. query, 1, true) ~= nil
+	end
+	function ns.Suggest(query)
+		local found, seen = {}, {}
+		if #query >= 2 and search:HasFocus() then
+			if page == "market" then
+				for item in pairs(ns.MarketItems()) do
+					local name = ns.CachedName(item)
+					if name and not seen[name] and Word(name, query) then
+						seen[name] = true
+						table.insert(found, { name = name, note = "" })
+					end
+				end
+			elseif page == "recipes" then
+				local me, skills = ns.MeKey(), ns.MySkills()
+				for _, r in ipairs(ns.Rows(nil, true)) do
+					local name = r.recipe.name
+					if name and not seen[name] and Word(name, query) then
+						seen[name] = true
+						local mine, note = r.recipe.by[me] ~= nil
+						if mine then
+							note = "learned"
+						else
+							local skill, have = ns.LearnInfo(r.recipe).skill, skills[r.recipe.profession]
+							if have and skill and skill <= have then note = "|cff40ff40learnable|r"
+							elseif have and skill then note = "needs skill " .. skill
+							else note = "needs " .. (r.recipe.profession or "?") end
+						end
+						table.insert(found, { name = name, note = note, row = r, mine = mine })
+					end
+				end
+			end
+		end
+		-- The name starting with it first, then by name.
+		table.sort(found, function(a, b)
+			local pa, pb = a.name:lower():sub(1, #query) == query, b.name:lower():sub(1, #query) == query
+			if pa ~= pb then return pa end
+			return a.name < b.name
+		end)
+		drop.pick = 0
+		for k, b in ipairs(drop.buttons) do
+			local s = found[k]
+			b.s = s
+			if s then
+				b.name:SetText(s.name)
+				b.note:SetText(s.note)
+				b:Show()
+			else
+				b:Hide()
+			end
+		end
+		Mark()
+		drop:SetHeight(math.min(#found, SUGGEST) * 18 + 8)
+		drop:SetShown(#found > 0)
+	end
+	search:HookScript("OnArrowPressed", function(_, key)
+		if not drop:IsShown() then return end
+		local n = 0
+		for _, b in ipairs(drop.buttons) do if b:IsShown() then n = n + 1 end end
+		if key == "DOWN" then drop.pick = drop.pick % n + 1 elseif key == "UP" then drop.pick = (drop.pick - 2) % n + 1 end
+		Mark()
+	end)
+	search:HookScript("OnEnterPressed", function()
+		local b = drop:IsShown() and drop.buttons[math.max(drop.pick, 1)]
+		if b and b.s then Choose(b.s) end
+	end)
+	search:HookScript("OnEscapePressed", function() drop:Hide() end)
+	-- After a click on a suggestion has had its turn.
+	search:HookScript("OnEditFocusLost", function() C_Timer.After(0.2, function() drop:Hide() end) end)
+	frame:HookScript("OnHide", function() drop:Hide() end)
 
 	local function Learn(self)
 		if self == frame.canLearn then canLearn = self:GetChecked() and true or false else needSkill = self:GetChecked() and true or false end
@@ -745,10 +871,12 @@ end
 local function Found(r)
 	local query = ns.search
 	if not query or query == "" then return true end
+	-- A chosen suggestion is that recipe only, not those using it (Zach 11/11).
+	if ns.searchExact then return (r.recipe.name or ""):lower() == query end
 	local function Has(name) return name and name:lower():find(query, 1, true) ~= nil end
-	if Has(r.recipe.name) or Has(ns.ItemName(r.recipe.item)) then return true end
+	if Has(r.recipe.name) or Has(ns.CachedName(r.recipe.item)) then return true end
 	for _, reagent in ipairs(r.recipe.reagents or {}) do
-		if Has(ns.ItemName(reagent[1])) then return true end
+		if Has(ns.CachedName(reagent[1])) then return true end
 	end
 	return false
 end
@@ -934,7 +1062,7 @@ Draw = function()
 	end
 	frame.note:SetText(#list == 0 and (mode == "all" and "No recipes: none of yours, and none shared by the guild through Skatteverket."
 		or "No recipes yet: open each profession window once on each character.")
-		or "Sells: after the 5% cut, orange if the price is over 2 days old. For sale: red under 5, green none. Profit/day: profit x sold a day, from two scans hours apart. White: you don't know it. Right-click to buy.")
+		or "Sells: after the 5% cut and the guild tax, orange if the price is over 2 days old. For sale: red under 5, green none. Profit/day: profit x sold a day, from two scans hours apart. White: you don't know it. Right-click to buy.")
 end
 
 function ns.Toggle(only)
@@ -960,7 +1088,7 @@ BokforingAPI = {
 	end,
 	Work = function() return ns.WorkSummary() end,
 	-- For Skatteverket's work orders where he sends the materials.
-	ShopForOrder = function(name, reagents, crafts, to, total) ns.ShopForOrder(name, reagents, crafts, to, total) end,
+	ShopForOrder = function(name, reagents, crafts, to, total, id) ns.ShopForOrder(name, reagents, crafts, to, total, id) end,
 	Refresh = function() if ns.Refresh then ns.Refresh() end end,
 	-- For BPP in Skatteverket's recipe window (Zach 11/11).
 	Price = function(item) return ns.BuyPrice(item) end,

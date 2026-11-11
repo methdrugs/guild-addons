@@ -377,7 +377,7 @@ function ns.LevelPlan(r, learned)
 	local made = crafts * qty
 	local market = math.floor((r.sold or 0) * 2)
 	local each = r.sells and r.sells / qty or 0
-	local value = math.min(made, market) * each + math.max(0, made - market) * ns.VendorSell(r.recipe.item)
+	local value = math.min(made, market) * each + math.max(0, made - market) * ns.VendorSell(r.recipe.item) * (1 - ns.TaxRate())
 	local recipePrice = 0
 	if not learned then
 		local item = ns.LearnInfo(r.recipe).item

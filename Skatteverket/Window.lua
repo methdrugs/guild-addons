@@ -49,7 +49,7 @@ local WINDOWS = {
 }
 -- Min anmälan sits with Inställningar (Zach 9/11): that is where things are changed.
 -- 9: Lämnat, the leader's tab of the Skatt window (Zach 10/11).
-local PAGE_WINDOW = { "skatt", "yrken", "options", "nytt", "options", "swedbank", "prestationer", "yrken", "skatt" }
+local PAGE_WINDOW = { "skatt", "yrken", "options", "nytt", "options", "swedbank", "prestationer", "yrken", "skatt", "nytt" }
 
 local frame, rows, headers, sorted = nil, {}, {}, {}
 local offset, selected, leaderMode = 0, nil, false
@@ -404,6 +404,12 @@ local function Build(id)
 		f.news:SetAllPoints()
 		ns.BuildNews(f.news)
 		ns.LayoutNews(def.w)
+		-- Nytt and Versioner (Zach 11/11); the note is also the bolt's
+		-- update badge.
+		f.sideTabs = {
+			SideTab(f, 1, "INV_Misc_Note_01", "Nytt", function() ns.ShowTab(4) end),
+			SideTab(f, 2, "INV_Misc_Head_Human_01", "Versioner", function() ns.ShowTab(10) end),
+		}
 	elseif id == "options" then
 		f.options = CreateFrame("Frame", nil, f)
 		f.options:SetAllPoints()
@@ -493,6 +499,9 @@ local function Layout(w)
 		f.sideTabs[2]:SetChecked(page == 3)
 	elseif w.id == "swedbank" then
 		SetShown(f.swed, not locked)
+	elseif w.id == "nytt" then
+		f.sideTabs[1]:SetChecked(page ~= 10)
+		f.sideTabs[2]:SetChecked(page == 10)
 	end
 end
 
@@ -651,7 +660,7 @@ function ns.RefreshWindow(id)
 				elseif wid == "yrken" then
 					if w.page == 8 then ns.RefreshOrders() else ns.RefreshRegistry() end
 				elseif wid == "swedbank" and SwedbankPanel then SwedbankPanel.Refresh()
-				elseif wid == "nytt" then ns.RefreshNews()
+				elseif wid == "nytt" then ns.RefreshNews(w.page)
 				elseif wid == "options" then
 					if w.page == 3 then ns.RefreshMine() else ns.RefreshOptions() end
 				elseif wid == "prestationer" then ns.RefreshAchievements()
@@ -691,7 +700,7 @@ function ns.ToggleWindow(n)
 end
 
 -- For the Swedbank addon and Bokföring (Zach 8/11, 9/11).
-local PAGES = { tax = 1, professions = 2, swedbank = 6, news = 4, options = 5, achievements = 7, orders = 8 }
+local PAGES = { tax = 1, professions = 2, swedbank = 6, news = 4, options = 5, achievements = 7, orders = 8, versions = 10 }
 SkatteverketAPI = {
 	-- Open a window on that page, or close it if it is already showing.
 	Toggle = function(page) ns.ToggleWindow(PAGES[page] or 1) end,
@@ -706,6 +715,13 @@ SkatteverketAPI = {
 	RefreshTodo = function() if ns.RefreshTodo then ns.RefreshTodo() end end,
 	-- The bank line, for Swedbank's unchecked payments (Zach 10/11).
 	RefreshBank = function() if ns.RefreshBank then ns.RefreshBank() end end,
+	-- The guild tax on income, 0.05 for 5%; 0 outside the guild (Zach 11/11).
+	TaxRate = function()
+		if not ns.db or not ns.InOurGuild() then return 0 end
+		return ns.db.rate or 0
+	end,
+	-- Whether a work order still waits for its materials; see Orders.lua.
+	OrderMaterialsDone = function(id) return ns.OrderMaterialsDone(id) end,
 	-- A member's standing as last seen, or nil if unknown.
 	MemberStanding = function(name)
 		local m = ns.db and ns.db.members[name]

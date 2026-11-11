@@ -11,12 +11,24 @@
 -- A reagent costs the cheapest of: the vendor, the auction house, or making
 -- it from a known recipe (Copper Tubes, bolts). Own mined materials count at
 -- the auction house price, since selling them is what using them gives up.
--- A sale brings the auction house price less its 5% cut.
+-- A sale brings the auction house price less its 5% cut and the guild tax.
 
 local _, ns = ...
 
 local CALLER = "Bokforing"
 ns.CUT = 0.05
+
+-- Skatteverket's guild tax on income, 0 without it or outside the guild.
+function ns.TaxRate()
+	local api = SkatteverketAPI
+	return api and api.TaxRate and api.TaxRate() or 0
+end
+
+-- What a sale at that price leaves in the bag: the auction house's cut,
+-- then the guild tax on the rest (Tungan Lingonsson 11/11).
+function ns.Keep(price)
+	return price * (1 - ns.CUT) * (1 - ns.TaxRate())
+end
 
 function ns.Print(text)
 	print("|cffffd100Bokföring:|r " .. text)
@@ -88,6 +100,12 @@ function ns.Vendor(item)
 	return ns.db.vendor[item]
 end
 
+-- Who sold it, for the vendor lines: " (Name, Zone)", or "" when not known.
+function ns.VendorWhere(item)
+	local at = ns.db.vendorAt and ns.db.vendorAt[item]
+	return at and string.format(" (%s, %s)", at.npc, at.zone) or ""
+end
+
 -- Reagents every trade goods or profession vendor sells (Zach 10/11: Fine
 -- Thread went on an auction house list because no vendor selling it had
 -- been open yet). Classic item numbers; the names come from the game, so a
@@ -115,21 +133,35 @@ end
 -- A name the game has not loaded yet shows as "item 4416" and is asked
 -- for; when it arrives the window is drawn again (Zach 10/11: the line
 -- under a recipe said "item 4416" until opened a second time).
-local waitingNames, redraw = {}, false
+-- An item the game cannot load is asked for once a session only (Zach
+-- 11/11: a search that found nothing asked again on every redraw, and the
+-- answer redrew the window, round and round).
+local waitingNames, failedNames, redraw = {}, {}, false
 function ns.ItemName(item)
 	local name = (C_Item and C_Item.GetItemNameByID and C_Item.GetItemNameByID(item)) or (GetItemInfo and GetItemInfo(item))
-	if not name and C_Item and C_Item.RequestLoadItemDataByID then
+	if not name and not waitingNames[item] and not failedNames[item] and C_Item and C_Item.RequestLoadItemDataByID then
 		C_Item.RequestLoadItemDataByID(item)
 		waitingNames[item] = true
 	end
 	return name or ("item " .. item)
 end
 
+-- The name if the game has it, never asking the server (Zach 11/11: a
+-- search asked for every reagent of every recipe, and the answers redrew
+-- the window for minutes).
+function ns.CachedName(item)
+	return (C_Item and C_Item.GetItemNameByID and C_Item.GetItemNameByID(item)) or (GetItemInfo and GetItemInfo(item))
+end
+
 local names = CreateFrame("Frame")
 for _, event in ipairs({ "GET_ITEM_INFO_RECEIVED", "ITEM_DATA_LOAD_RESULT" }) do pcall(names.RegisterEvent, names, event) end
-names:SetScript("OnEvent", function(_, _, item)
+names:SetScript("OnEvent", function(_, _, item, success)
 	if not waitingNames[item] then return end
 	waitingNames[item] = nil
+	if success == false then
+		failedNames[item] = true
+		return
+	end
 	if redraw then return end
 	redraw = true
 	C_Timer.After(0.2, function()
@@ -167,18 +199,27 @@ local function ReadMerchant()
 	if not GetMerchantNumItems then return end
 	for i = 1, GetMerchantNumItems() do
 		local item = GetMerchantItemID and GetMerchantItemID(i)
-		local price, quantity, extended
+		local price, quantity, available, extended
 		if C_MerchantFrame and C_MerchantFrame.GetItemInfo then
 			local info = C_MerchantFrame.GetItemInfo(i)
-			if info then price, quantity, extended = info.price, info.stackCount, info.hasExtendedCost end
+			if info then price, quantity, available, extended = info.price, info.stackCount, info.numAvailable, info.hasExtendedCost end
 		elseif GetMerchantItemInfo then
 			local _
-			_, _, price, quantity, _, _, _, extended = GetMerchantItemInfo(i)
+			_, _, price, quantity, available, _, _, extended = GetMerchantItemInfo(i)
 		end
-		-- Token-priced goods are not for gold.
+		-- Token-priced goods are not for gold. Limited stock (Zach 11/11:
+		-- Bronze Framework was on a list as vendor, and the vendor had none)
+		-- sells out, so it is no vendor good; -1 is unlimited. A recipe is
+		-- still noted where it is sold, limited or not (review 11/11).
 		if item and price and price > 0 and not extended then
-			ns.db.vendor[item] = price / math.max(quantity or 1, 1)
-			if ns.NoteRecipeVendor then ns.NoteRecipeVendor(item, price / math.max(quantity or 1, 1)) end
+			local each = price / math.max(quantity or 1, 1)
+			if (available or -1) < 0 then
+				ns.db.vendor[item] = each
+				local npc, zone = UnitName("npc") or "?", GetZoneText and GetZoneText() or "?"
+				local at = ns.db.vendorAt[item]
+				if not at or at.npc ~= npc or at.zone ~= zone then ns.db.vendorAt[item] = { npc = npc, zone = zone } end
+			end
+			if ns.NoteRecipeVendor then ns.NoteRecipeVendor(item, each) end
 		end
 	end
 end
@@ -548,7 +589,7 @@ BuildRows = function(profession, all)
 			-- of what he sold in the last week.
 			row.myCount, row.myMoney = ns.MySales(r.item, 7)
 			if row.myCount then row.sold = math.max(row.sold or 0, row.myCount / 7) end
-			if price then row.sells = price * r.qty * (1 - ns.CUT) end
+			if price then row.sells = ns.Keep(price * r.qty) end
 			row.time = CraftTime(id, 0, { [id] = true }, false)
 			row.timeMade = CraftTime(id, 0, { [id] = true }, true)
 			if row.cost and row.sells then
@@ -950,6 +991,10 @@ events:SetScript("OnEvent", function(_, event, name)
 		ns.db = BokforingDB
 		ns.db.recipes = ns.db.recipes or {}
 		ns.db.vendor = ns.db.vendor or {}
+		-- Once (0.6.4): prices from before limited stock was left out, and
+		-- with no vendor name, are forgotten and learnt again (Zach 11/11).
+		if not ns.db.vendorAt then ns.db.vendor = {} end
+		ns.db.vendorAt = ns.db.vendorAt or {}
 		ns.db.listings = ns.db.listings or {}
 		ns.db.catalog = ns.db.catalog or {}
 		ns.db.turnover = ns.db.turnover or {}

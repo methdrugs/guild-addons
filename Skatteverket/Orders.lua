@@ -112,6 +112,8 @@ end
 local function Changed()
 	if ns.RefreshOrderBadge then ns.RefreshOrderBadge() end
 	if ns.RefreshWindow then ns.RefreshWindow("yrken") end
+	-- Making now follows the materials sent (review 11/11).
+	if BokforingAPI and BokforingAPI.Refresh then BokforingAPI.Refresh() end
 end
 
 -- Orders waiting for this character to act on: new or accepted, to them.
@@ -126,6 +128,34 @@ end
 
 local function RecipeName(key)
 	return ns.RecipeName and ns.RecipeName(key) or key
+end
+
+-- His own order declined or run out (Zach 11/11: a chat line was easy to
+-- miss): on the bolt's ! until he has opened it.
+local function Unnoticed(o)
+	local state = State(o)
+	return o.from == ns.Me() and not o.noticed and (state == "avböjd" or state == "utgången")
+end
+
+function ns.OrderNotices()
+	local out = {}
+	if not ns.db or ns.Locked() then return out end
+	-- Once (0.32): orders that closed before the notices are no news.
+	if not ns.db.ordersNoticed then
+		for _, o in pairs(Orders()) do
+			if not OPEN[State(o)] then o.noticed = true end
+		end
+		ns.db.ordersNoticed = true
+	end
+	for _, o in pairs(Orders()) do
+		if Unnoticed(o) then
+			local text = State(o) == "avböjd"
+				and string.format("%s avböjde din order %s x%d%s", o.to:match("^(%S+)"), RecipeName(o.key), o.count, o.reason and (" (" .. o.reason .. ")") or "")
+				or string.format("Din order %s x%d till %s gick ut", RecipeName(o.key), o.count, o.to:match("^(%S+)"))
+			table.insert(out, { text = text, click = function() ns.ShowOrder(o) end })
+		end
+	end
+	return out
 end
 
 -- Ordering --------------------------------------------------------------
@@ -178,7 +208,7 @@ function ns.PlaceOrder(to, key, count, mats, days, note, raw, steps, deliver)
 	if mats == "e" and BokforingAPI and BokforingAPI.ShopForOrder then
 		local reagents = {}
 		for _, r in ipairs(Reagents(o)) do table.insert(reagents, { r.itemID, r.need }) end
-		if #reagents > 0 then BokforingAPI.ShopForOrder(RecipeName(key), reagents, count, to, true) end
+		if #reagents > 0 then BokforingAPI.ShopForOrder(RecipeName(key), reagents, count, to, true, o.id) end
 	end
 	Changed()
 end
@@ -253,6 +283,7 @@ function ns.OnOrder(sender, parts)
 	-- Sent materials only grow; keep what was known.
 	o.sent = DecodeSent(parts[14], old and old.sent and DecodeSent(EncodeSent(old.sent)) or nil)
 	o.raw, o.steps = DecodeList(parts[15], "count"), DecodeList(parts[16], "crafts")
+	o.noticed = old and old.noticed
 	-- A recipient only from the guild leader's orders (Zach 11/11).
 	if parts[17] and parts[17] ~= "" and o.from == ns.Leader() then o.deliver = parts[17] end
 	Orders()[o.id] = o
@@ -801,6 +832,10 @@ end
 ShowOrder = function(o)
 	if not view then BuildView() end
 	view.order = o
+	if Unnoticed(o) then
+		o.noticed = true
+		Changed()
+	end
 	local me, state = ns.Me(), State(o)
 	local incoming = o.to == me
 	if view.titleText then view.titleText:SetText(incoming and ("Arbetsorder från " .. o.from) or ("Arbetsorder till " .. o.to)) end
@@ -1052,6 +1087,18 @@ local function Stage(o, incoming)
 	return 1, 4, "Beställd", GREY
 end
 
+-- For Bokföring's Making now (Zach 11/11): true once the order no longer
+-- waits for his materials (all sent, or closed), false while it does, nil
+-- for an order not known here.
+function ns.OrderMaterialsDone(id)
+	local o = Orders()[id]
+	if not o then return nil end
+	if not OPEN[State(o)] then return true end
+	local _, sent, need = SentStatus(o)
+	if not need then return nil end
+	return sent >= need
+end
+
 local function Act(o, state, reason)
 	SetState(o, state, reason)
 end
@@ -1081,7 +1128,19 @@ function ns.BuildOrders(parent)
 	page.empty:SetPoint("TOPLEFT", 24, -100)
 	page.empty:SetWidth(390)
 	page.empty:SetJustifyH("LEFT")
-	page.empty:SetText("Inga arbetsordrar. Beställ från någon under Yrken: öppna deras recept, välj ett och tryck Beställ.")
+	page.empty:SetText("Inga pågående arbetsordrar. Beställ från någon under Yrken: öppna deras recept, välj ett och tryck Beställ.")
+	page.closed = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
+	page.closed:SetSize(22, 22)
+	page.closed:SetPoint("TOPLEFT", 260, -66)
+	page.closed.text = page.closed.text or page.closed.Text or page.closed:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	page.closed.text:ClearAllPoints()
+	page.closed.text:SetPoint("LEFT", page.closed, "RIGHT", 2, 0)
+	page.closed.text:SetFontObject("GameFontHighlightSmall")
+	page.closed:SetScript("OnClick", function(self)
+		showClosed = self:GetChecked() and true or false
+		offset = 0
+		ns.RefreshOrders()
+	end)
 	for i = 1, ROWS do
 		local row = CreateFrame("Frame", nil, parent)
 		row:SetSize(400, ROW_H)
@@ -1159,16 +1218,29 @@ local function Button(b, label, onClick)
 	b:Show()
 end
 
+-- Closed (Zach 11/11): declined, cancelled, run out, or Klar for a day;
+-- shown only with Visa avslutade. A notice not yet opened stays.
+local showClosed = false
+local function Closed(o)
+	local state = State(o)
+	if OPEN[state] or Unnoticed(o) then return false end
+	if state == "klar" then return ns.Now() - o.stamp > DAY end
+	return true
+end
+
 -- Three sections: to you, from you, then to yourself, Bokföring's shopping
 -- lists still on the go (Zach 9/11); open ones first, newest first.
 function ns.RefreshOrders()
 	if not page then return end
 	local me = ns.Me()
-	local lines = {}
+	local lines, closed = {}, 0
 	for _, section in ipairs({ { "to", "Till dig", "Beställare" }, { "from", "Från dig", "Hantverkare" } }) do
 		local list = {}
 		for _, o in pairs(Orders()) do
-			if o[section[1]] == me then table.insert(list, o) end
+			if o[section[1]] == me then
+				if not Closed(o) or showClosed then table.insert(list, o) end
+				if Closed(o) then closed = closed + 1 end
+			end
 		end
 		table.sort(list, function(a, b)
 			local oa, ob = OPEN[State(a)] and 1 or 0, OPEN[State(b)] and 1 or 0
@@ -1186,6 +1258,8 @@ function ns.RefreshOrders()
 		for _, w in ipairs(own) do table.insert(lines, { work = w }) end
 	end
 	page.empty:SetShown(#lines == 0)
+	page.closed.text:SetText(string.format("Visa avslutade (%d)", closed))
+	page.closed:SetChecked(showClosed)
 	offset = math.max(0, math.min(offset, #lines - ROWS))
 	for i, row in ipairs(rows) do
 		local line = lines[i + offset]

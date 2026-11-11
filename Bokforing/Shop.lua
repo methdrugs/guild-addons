@@ -99,7 +99,7 @@ function ns.Shop(id, crafts, raw, tries)
 		local each, how = ns.CostOf(item, false)
 		total = total + (each or 0) * count
 		if how == "vendor" or ns.IsVendorGood(item) then
-			table.insert(vendor, string.format("%d x %s%s", count, name, each and (" (" .. ns.Money(each * count) .. ")") or ""))
+			table.insert(vendor, string.format("%d x %s%s%s", count, name, each and (" (" .. ns.Money(each * count) .. ")") or "", ns.VendorWhere(item)))
 		else
 			table.insert(terms, SearchString(name, count))
 			table.insert(lines, string.format("%d x %s%s", count, name, each and (" (" .. ns.Money(each * count) .. ")") or ""))
@@ -143,7 +143,7 @@ end
 -- shows under Making now until bought or marked done. reagents are
 -- { itemID, count } per craft, from Skatteverket's recipe data; with
 -- total, the counts are for the whole order (raw materials, Zach 10/11).
-function ns.ShopForOrder(name, reagents, crafts, to, total)
+function ns.ShopForOrder(name, reagents, crafts, to, total, id)
 	local buy, terms, vendor = {}, {}, {}
 	for _, r in ipairs(reagents) do
 		local missing = (total and r[2] or r[2] * crafts) - Owned(r[1])
@@ -156,10 +156,11 @@ function ns.ShopForOrder(name, reagents, crafts, to, total)
 		for _, r in ipairs(reagents) do table.insert(perCraft, { r[1], r[2] / crafts }) end
 	end
 	local recipe = { name = name, qty = 1, reagents = perCraft }
-	ns.NewPlan(nil, nil, crafts, false, buy, listName, recipe, to)
+	local plan = ns.NewPlan(nil, nil, crafts, false, buy, listName, recipe, to)
+	plan.orderId = id
 	for item, count in pairs(buy) do
 		if ns.IsVendorGood(item) then
-			table.insert(vendor, string.format("%d x %s", count, ns.ItemName(item)))
+			table.insert(vendor, string.format("%d x %s%s", count, ns.ItemName(item), ns.VendorWhere(item)))
 		else
 			table.insert(terms, SearchString(ns.ItemName(item), count))
 		end

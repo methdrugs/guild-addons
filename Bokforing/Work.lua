@@ -45,12 +45,16 @@ local function Lines()
 	for _, p in ipairs(ns.db.plans or {}) do
 		local made = Crafted(p)
 		-- A work order's materials (Zach 9/11): someone else crafts, so it
-		-- stays until all is bought or he marks it done.
+		-- stays until the materials are sent (Zach 11/11; Skatteverket
+		-- knows), or for an older list until all is bought, or he marks it done.
 		local bought = true
 		for item, n in pairs(p.need or {}) do
 			if (p.bought[item] or 0) < n then bought = false end
 		end
-		local open = p.order and not bought or (not p.order and made < p.crafts)
+		local api = SkatteverketAPI
+		local sent = p.orderId and api and api.OrderMaterialsDone and api.OrderMaterialsDone(p.orderId)
+		if sent == nil then sent = bought end
+		local open = p.order and not sent or (not p.order and made < p.crafts)
 		if not p.done and not p.flip and now - p.at < SHOW_DAYS * 86400 and open then
 			table.insert(lines, { plan = p, made = made })
 			local left = p.order and p.crafts or p.crafts - made

@@ -25,8 +25,9 @@ local GRAPH_H, GRAPH_X, GRAPH_W = 110, 80, 600
 local LINES = { { "spentSum", 0.9, 0.2, 0.2 }, { "predicted", 0.25, 0.5, 1 }, { "incomeSum", 1, 0.82, 0 } }
 -- Name, x, width.
 -- Posted and On AH (Zach 10/11): what went up for sale against what sold.
-local COLUMNS = { { "Item", 0, 160 }, { "Crafted", 160, 50 }, { "Posted", 210, 50 }, { "Sold", 260, 45 }, { "On AH", 305, 45 },
-	{ "Spent", 350, 70 }, { "Income", 420, 70 }, { "Net", 490, 70 }, { "Expected each", 560, 65 }, { "Real each", 625, 65 } }
+-- Stock (Zach 11/11): what he holds of it, at today's price.
+local COLUMNS = { { "Item", 0, 150 }, { "Crafted", 150, 45 }, { "Posted", 195, 45 }, { "Sold", 240, 40 }, { "On AH", 280, 40 },
+	{ "Spent", 320, 65 }, { "Income", 385, 65 }, { "Net", 450, 60 }, { "Stock", 510, 60 }, { "Expected", 570, 60 }, { "Real each", 630, 60 } }
 
 local function Data()
 	local db = ns.db
@@ -237,7 +238,7 @@ local function Crafted(id)
 	if not r or not r.item then return end
 	Timed(id)
 	local e = Expected(id, r.profession)
-	table.insert(Data().crafts, { at = time(), recipe = id, item = r.item, qty = r.qty or 1, cost = e and e.cost, sells = e and e.sells })
+	table.insert(Data().crafts, { at = time(), recipe = id, item = r.item, qty = r.qty or 1, cost = e and e.cost, sells = e and e.sells, taxed = true })
 	ns.lastCraft = string.format("%s, %s", r.name or ns.ItemName(r.item), date("%H:%M"))
 	ns.CleanLists()
 	if ns.Refresh then ns.Refresh() end
@@ -262,8 +263,8 @@ end
 -- Per day of the graph and per item (the table). Each day carries running
 -- totals at its end, over all the kept history (Zach 9/11): spent on
 -- reagents, the income Bokföring predicted for the crafts made (the price
--- less the cut when crafted), income from sales, and the unsold stock at
--- today's auction house price less the cut.
+-- less the cut and tax when crafted), income from sales, and the unsold
+-- stock at today's auction house price less the cut and tax.
 local function Totals()
 	local db = Data()
 	local days, byDay = {}, {}
@@ -362,13 +363,23 @@ local function Totals()
 			local left = math.max(0, n - (sold[name] or 0))
 			d.stockN = d.stockN + left
 			local price = ns.AH(items[name].item)
-			d.stock = d.stock + left * (price and price * (1 - ns.CUT) or items[name].expectedEach or 0)
+			d.stock = d.stock + left * (price and ns.Keep(price) or items[name].expectedEach or 0)
 		end
 	end
+	-- Net (Zach 11/11: a red Net looked like bleeding money while it was
+	-- stock not sold yet): income less what the sold ones cost; without
+	-- crafts (work orders) all that was spent. Stock: what he holds in bags,
+	-- bank and on the auction house, at today's price after cut and tax.
 	local list = {}
 	for _, it in pairs(items) do
-		it.net = it.income - it.spent
+		local costEach = it.crafted > 0 and it.spent / it.crafted
+		it.net = it.income - (costEach and costEach * math.min(it.sold, it.crafted) or it.spent)
 		if it.sold > 0 then it.realEach = it.income / it.sold end
+		if it.item then
+			it.held = ns.Have(it.item) + it.onAH
+			local price = ns.AH(it.item)
+			it.stock = it.held * (price and ns.Keep(price) or it.expectedEach or 0)
+		end
 		table.insert(list, it)
 	end
 	table.sort(list, function(a, b)
@@ -443,6 +454,9 @@ local function Build(frame)
 	local legend = graph:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	legend:SetPoint("TOPLEFT", 8, -2)
 	legend:SetText("|cffff4040Spent on reagents|r   |cff4080ffPredicted income|r   |cffffd100Income from sales|r")
+	-- Gold at hand (Zach 11/11): income and stock against what was spent.
+	view.potential = graph:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	view.potential:SetPoint("TOPRIGHT", -8, -2)
 	local slot = GRAPH_W / DAYS
 	for k = 1, DAYS do
 		local b = CreateFrame("Frame", nil, graph)
@@ -507,9 +521,11 @@ local function Build(frame)
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 			GameTooltip:AddLine(it.name)
 			GameTooltip:AddLine("Spent: gold paid for reagents through Bokföring lists only. Reagents from your bags and buys outside a list are not counted.", 1, 1, 1, true)
-			GameTooltip:AddLine("Income: sold mails of this item after you crafted it, less the 5% cut.", 1, 1, 1, true)
-			GameTooltip:AddLine("Expected each: the auction house price less the cut when you crafted; real each: what it sold for.", 1, 1, 1, true)
+			GameTooltip:AddLine("Income: sold mails of this item after you crafted it, without the deposit and less the guild tax.", 1, 1, 1, true)
+			GameTooltip:AddLine("Expected each: the auction house price less the cut and guild tax when you crafted; real each: what it sold for after tax.", 1, 1, 1, true)
 			GameTooltip:AddLine("Posted: put up on the auction house since you started crafting it, by hand or with Auctionator. On AH: posted, less sold and less what came back expired or cancelled.", 1, 1, 1, true)
+			GameTooltip:AddLine("Net: income less what the sold ones cost (spent / crafted for each). Stock: what you hold in bags, bank and on the AH, at today's price after cut and tax.", 1, 1, 1, true)
+			if it.held then GameTooltip:AddLine(string.format("You hold %d.", it.held), 0.6, 0.6, 0.6, true) end
 			if it.crafted > it.sold then
 				GameTooltip:AddLine(string.format("%d crafted not sold yet (or the sold mail not read yet).", it.crafted - it.sold), 0.6, 0.6, 0.6, true)
 			end
@@ -540,10 +556,14 @@ local function Build(frame)
 	end)
 end
 
+-- In the table, copper only under a gold (Zach 11/11: "25g 24s 74c" ran
+-- into the next column).
 local function Money(value, red)
 	if not value then return "|cff808080-|r" end
 	if value == 0 then return "|cff8080800|r" end
-	return (red and "|cffff4040" or "") .. ns.Money(value) .. (red and "|r" or "")
+	local text = ns.Money(value)
+	if math.abs(value) >= 10000 then text = text:gsub(" %d+c$", "") end
+	return (red and "|cffff4040" or "") .. text .. (red and "|r" or "")
 end
 
 function ns.ShowHistory(frame, show)
@@ -557,7 +577,6 @@ end
 function ns.RefreshHistory(frame)
 	local days
 	days, list = Totals()
-	local own = days
 	if scope == "guild" then days = GuildDays(days) end
 	for _, b in ipairs(view.scopes) do
 		if b.scope == scope then b:LockHighlight() else b:UnlockHighlight() end
@@ -599,8 +618,8 @@ function ns.RefreshHistory(frame)
 		end
 		if b.label then b.label:SetText(date("%d/%m", d.at)) end
 	end
-	local today = own[#own]
 	if scope == "guild" then
+		view.potential:SetText("")
 		view.header:Hide()
 		for _, row in ipairs(rows) do row:Hide() end
 		local members = 0
@@ -625,24 +644,101 @@ function ns.RefreshHistory(frame)
 			row.cells[6]:SetText(Money(it.spent))
 			row.cells[7]:SetText(Money(it.income))
 			row.cells[8]:SetText(Money(it.net, it.net < 0))
-			row.cells[9]:SetText(Money(it.expectedEach))
-			-- Real under expected in red: it sold for less than promised.
-			row.cells[10]:SetText(Money(it.realEach, it.realEach and it.expectedEach and it.realEach < it.expectedEach))
+			row.cells[9]:SetText(Money(it.stock))
+			row.cells[10]:SetText(Money(it.expectedEach))
+			-- Red when it sold for over 5% less than promised (Zach 11/11: 1% under is noise).
+			row.cells[11]:SetText(Money(it.realEach, it.realEach and it.expectedEach and it.realEach < it.expectedEach * 0.95))
 			row:Show()
 		else
 			row:Hide()
 		end
 	end
+	local stock, held = 0, 0
+	for _, it in ipairs(list) do stock, held = stock + (it.stock or 0), held + (it.held or 0) end
+	local potential = income + stock - spent
+	view.potential:SetText(#list > 0 and string.format("Potential: %s%s|r", potential < 0 and "|cffff4040-" or "|cff40ff40+", ns.Money(math.abs(potential))) or "")
 	frame.status:SetText(string.format("%d items", #list))
 	frame.note:SetText(#list == 0 and "Nothing yet: craft one of your recipes, or buy reagents through a Bokföring list (right-click a recipe)."
-		or string.format("Last %d days: income %s, spent %s. In stock: %d, worth about %s at today's price. Spent: buys through Bokföring lists only; income: sold mails of what you crafted.",
-			DAYS, ns.Money(income), ns.Money(spent), today.stockN, ns.Money(today.stock)))
+		or string.format("Last %d days: income %s, spent %s. In stock: %d, worth about %s at today's price. Potential: income + stock - spent. Spent: buys through Bokföring lists only.",
+			DAYS, ns.Money(income), ns.Money(spent), held, ns.Money(stock)))
+end
+
+-- The item tooltip (Zach 11/11: at the auction house, what a sale makes
+-- now against what it cost to craft). Cost: the newest crafts that cover
+-- what he holds, so the stock in his bags; at least the latest craft.
+-- Break-even: the price where the cut and the guild tax leave the cost.
+local function CostEach(item)
+	local crafts = Data().crafts
+	local held = math.max(1, ns.Have(item))
+	local n, cost = 0, 0
+	for i = #crafts, 1, -1 do
+		local c = crafts[i]
+		if c.item == item and c.cost and n < held then
+			local take = math.min(c.qty or 1, held - n)
+			n, cost = n + take, cost + c.cost / (c.qty or 1) * take
+		end
+	end
+	if n > 0 then return cost / n end
+end
+
+local function AddTooltip(tooltip, item)
+	if not item or not ns.db or (ns.Allowed and not ns.Allowed()) then return end
+	local cost = CostEach(item)
+	if not cost then return end
+	local tax = ns.TaxRate()
+	local cuts = tax > 0 and string.format("5%% AH, %g%% guild tax", tax * 100) or "5% AH"
+	tooltip:AddLine("Bokföring")
+	tooltip:AddDoubleLine("Cost each", ns.Money(cost), 1, 1, 1, 1, 1, 1)
+	local price = ns.AH(item)
+	if price then
+		local keep = ns.Keep(price)
+		local profit = keep - cost
+		tooltip:AddDoubleLine(string.format("AH now %s, you keep (%s)", ns.Money(price), cuts), ns.Money(keep), 1, 1, 1, 1, 1, 1)
+		tooltip:AddDoubleLine("Profit each", (profit < 0 and "-" or "+") .. ns.Money(math.abs(profit)), 1, 1, 1,
+			profit < 0 and 1 or 0.25, profit < 0 and 0.25 or 1, 0.25)
+	end
+	tooltip:AddDoubleLine("Break-even price", ns.Money(math.ceil(cost / ns.Keep(1))), 1, 1, 1, 1, 0.82, 0)
+	tooltip:Show()
+end
+
+if TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall and Enum and Enum.TooltipDataType then
+	TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, function(tooltip, data)
+		if tooltip == GameTooltip or tooltip == ItemRefTooltip then AddTooltip(tooltip, data and data.id) end
+	end)
+else
+	for _, tip in ipairs({ GameTooltip, ItemRefTooltip }) do
+		tip:HookScript("OnTooltipSetItem", function(self)
+			local _, link = self:GetItem()
+			AddTooltip(self, link and tonumber(link:match("item:(%d+)")))
+		end)
+	end
 end
 
 local events = CreateFrame("Frame")
 for _, event in ipairs({ "PLAYER_LOGIN", "PLAYER_MONEY", "UNIT_SPELLCAST_START", "UNIT_SPELLCAST_SUCCEEDED", "COMMODITY_PURCHASE_FAILED" }) do
 	pcall(events.RegisterEvent, events, event)
 end
+-- Once (0.6.4, Zach 11/11): crafts and sales saved before the guild tax
+-- was counted get it taken off, so History does not mix the two. The
+-- deposits in old sales cannot be told apart and stay. Waits until the
+-- guild is known; outside the guild there is nothing to take off. Entries
+-- from 0.6.4 on are marked taxed and never touched.
+local function TaxOldHistory()
+	local db = Data()
+	if db.taxedHistory then return end
+	local rate = ns.TaxRate()
+	if rate <= 0 then return end
+	for _, c in ipairs(db.crafts) do
+		if c.sells and not c.taxed then c.sells, c.taxed = c.sells * (1 - rate), true end
+	end
+	for _, saleList in pairs(db.sales or {}) do
+		for _, s in ipairs(saleList) do
+			if not s.taxed then s.money, s.taxed = s.money * (1 - rate), true end
+		end
+	end
+	db.taxedHistory = true
+end
+
 events:SetScript("OnEvent", function(_, event, unit, _, spell)
 	if not ns.db then return end
 	if event == "PLAYER_LOGIN" then
@@ -650,6 +746,7 @@ events:SetScript("OnEvent", function(_, event, unit, _, spell)
 		Hooks()
 		-- After Auctionator has loaded its lists.
 		C_Timer.After(10, ns.CleanLists)
+		C_Timer.After(10, TaxOldHistory)
 	elseif event == "PLAYER_MONEY" then
 		MoneyChanged()
 	elseif event == "COMMODITY_PURCHASE_FAILED" then
@@ -663,7 +760,7 @@ events:SetScript("OnEvent", function(_, event, unit, _, spell)
 	end
 end)
 
--- What Bokföring expected one of an item to bring, after the cut, at its
+-- What Bokföring expected one of an item to bring, after the cut and tax, at its
 -- latest craft; for the sale notice in chat (Zach 9/11).
 function ns.ExpectedEach(name)
 	local crafts = Data().crafts

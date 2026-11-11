@@ -40,7 +40,7 @@
 local _, ns = ...
 
 ns.GUILD = "THÖNDERSTÖRM"
-ns.VERSION = "0.31"
+ns.VERSION = "0.32"
 -- Whether this build is out in WowUp (Zach 11/11): `wowaddons publish`
 -- sets it true in what it pushes and in his installed copy; a plain
 -- `wowaddons` install keeps it false, so the leader's test builds raise no
@@ -604,10 +604,13 @@ local function OnTakeMail(index)
 	if not char or not ns.InOurGuild() or takenMail[index] then return end
 	local _, _, _, _, money = GetInboxHeaderInfo(index)
 	if not money or money <= 0 then return end
-	local invoiceType = GetInboxInvoiceInfo and GetInboxInvoiceInfo(index)
+	if not GetInboxInvoiceInfo then return end
+	local invoiceType, _, _, _, _, deposit = GetInboxInvoiceInfo(index)
 	if invoiceType ~= "seller" then return end
 	takenMail[index] = true
-	AddIncome(money, "a")
+	-- The deposit coming back is the seller's own money, not income
+	-- (Tungan Lingonsson 11/11).
+	AddIncome(money - (deposit or 0), "a")
 end
 hooksecurefunc("TakeInboxMoney", OnTakeMail)
 if AutoLootMailItem then hooksecurefunc("AutoLootMailItem", OnTakeMail) end
@@ -774,7 +777,20 @@ end
 
 local function Newer(name, seen, own)
 	if not own or own == "-" or VersionNumber(seen) <= VersionNumber(own) then return end
-	if VersionNumber(seen) > VersionNumber(newer[name]) then newer[name] = seen end
+	if VersionNumber(seen) > VersionNumber(newer[name]) then
+		newer[name] = seen
+		if ns.RefreshTodo then ns.RefreshTodo() end
+	end
+end
+
+-- What this client is behind on, as "Skatteverket 0.32" lines (Zach 11/11:
+-- on the bolt's ! and at the top of Nytt until updated).
+function ns.Behind()
+	local out = {}
+	for _, name in ipairs({ "Skatteverket", "Swedbank", "Bokföring" }) do
+		if newer[name] then table.insert(out, name .. " " .. newer[name]) end
+	end
+	return out
 end
 
 local function CheckVersion(skatt, swed, bok, restart)

@@ -12,6 +12,18 @@ local _, ns = ...
 -- enough, "restart" when the release adds files the game only reads at
 -- start; shown in red under the version.
 ns.NOTES = {
+	{ "0.32", "2026-11-11", after = "reload", {
+		"Nytt: har någon i guildet en nyare version än du visar blixten en liten lapp, samma som Nytt-fliken, med Uppdatera och vilka versioner när du håller muspekaren över,, och Nytt visar dem överst, tills du har uppdaterat. Vem som kör vilken version har en egen flik, Versioner, i Nytt.",
+		"Arbetsorder: listan visar bara pågående ordrar. Avböjda, avbrutna, utgångna och de som varit Klar i ett dygn syns med rutan Visa avslutade.",
+		"Arbetsorder: avböjer någon din order, eller går den ut, syns det på blixtens ! tills du har öppnat ordern.",
+		"Skatt: depositionen du får tillbaka när något säljs på AH räknas inte längre som inkomst. Det är dina egna pengar. Tack @Tungan Lingonsson som hittade det!",
+		"Bokföring 0.6.4: vinsten räknar nu med guildskatten, inte bara AH:s 5 %. Försäljningar i historiken räknas utan depositionen och efter skatt. Tack igen, Tungan!",
+		"Bokföring 0.6.4: en vara som en försäljare bara har några få av räknas inte längre som försäljarvara, och raderna \"vendor:\" säger vilken försäljare och var. Sparade försäljarpriser har nollställts en gång; de kommer tillbaka när du öppnar försäljarna.",
+		"Bokföring 0.6.4: en arbetsorder där du skickar materialet ligger kvar i Making now tills allt är skickat, inte bara köpt.",
+		"Bokföring 0.6.4: History räknar Net som inkomst minus vad de sålda kostade, så det du inte sålt än syns inte som förlust. Ny kolumn Stock: det du har i väskor, bank och på AH till dagens pris, och överst Potential: inkomst + lager - utgifter.",
+		"Bokföring 0.6.4: sökrutan föreslår namn när du skriver (\"swi\" ger Swiftness Potion), med om du kan receptet, kan lära dig det eller behöver mer skill. Välj med piltangenterna och Enter, eller klicka. Sökningen hackar inte längre när inget hittas.",
+		"Bokföring 0.6.4: håll muspekaren över något du har craftat (i väskan eller på AH) så visar Bokföring vad det kostade, vad du får för det på AH nu efter AH:s 5 % och guildskatten, vinsten och lägsta pris utan förlust (Break-even).",
+	} },
 	{ "0.31", "2026-11-11", after = "reload", {
 		"Arbetsorder: en order kan säga vem som ska få det färdiga, om det inte är den som beställde. Det står i ordern (Skicka färdiga till), i raden i guildchatten och i brevet med materialet. Som hantverkare har du då en knapp Fyll i brev i ordern: brevet adresseras till mottagaren och det färdiga läggs i. Du trycker Send själv, och ordern blir Klar av sig själv när allt det färdiga har gått iväg.",
 		"Bokföring 0.6.3: kan ge Skatteverket priser på material. Ett fel vid AH-skanning är rättat (en vara som inte fanns ute tidigare samma dag).",
@@ -281,9 +293,29 @@ function ns.LayoutNews(width)
 	page.text:SetWidth(width - 74)
 end
 
-function ns.RefreshNews()
+-- Page 4 Nytt: what to update, then the notes; page 10 Versioner: who
+-- runs what, for everyone (Zach 11/11).
+local shownPage
+function ns.RefreshNews(n)
 	if not page or not page:IsShown() then return end
-	page.text:SetText(Versions() .. "\n" .. Notes())
+	if n ~= shownPage then
+		shownPage = n
+		page.scroll:SetVerticalScroll(0)
+	end
+	if n == 10 then
+		page.text:SetText(Versions())
+		page.child:SetHeight(page.text:GetStringHeight() + 8)
+		return
+	end
+	-- What this client is behind on, first (Zach 11/11). Its notes are in
+	-- the new version, so only the numbers here.
+	local behind = ns.Behind and ns.Behind() or {}
+	local top = ""
+	if #behind > 0 then
+		top = RED .. "Uppdatera:|r\n" .. WHITE .. "    " .. table.concat(behind, "\n    ") .. "|r\n"
+			.. GREY .. "Uppdatera guild-addons i WowUp och skriv /reload. Vad som är nytt står här efteråt.|r\n \n"
+	end
+	page.text:SetText(top .. Notes())
 	page.child:SetHeight(page.text:GetStringHeight() + 8)
 end
 

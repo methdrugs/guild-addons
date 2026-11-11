@@ -470,6 +470,11 @@ local function Matches(item, query)
 	return ns.ItemName(item):lower():find(query, 1, true) ~= nil
 end
 
+-- For the search suggestions (Window.lua).
+function ns.MarketItems()
+	return Tracked()
+end
+
 function ns.RefreshMarket(frame)
 	local query = ns.search
 	list = {}
