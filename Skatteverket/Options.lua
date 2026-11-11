@@ -48,8 +48,16 @@ function ns.BuildOptions(parent)
 			function() return ns.db.showBanners ~= false end,
 			function(on) ns.db.showBanners = on end))
 	end
+	-- Bokföring's lists (Zach 11/11), where it is installed.
+	local y = ns.PRESTATIONER and -178 or -150
+	if BokforingAPI and BokforingAPI.KeepLists then
+		table.insert(page.boxes, Check(parent, "Bokföring: ta bort klara listor ur Auctionator", y,
+			function() return not BokforingAPI.KeepLists() end,
+			function(on) BokforingAPI.KeepLists(not on) end))
+		y = y - 28
+	end
 	local hint = parent:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-	hint:SetPoint("TOPLEFT", 28, -188)
+	hint:SetPoint("TOPLEFT", 28, y - 10)
 	hint:SetWidth(440)
 	hint:SetJustifyH("LEFT")
 	hint:SetText("Utan minimapknappen: /skatt öppnar Skatt, /yrken Yrken, /swedbank Swedbank och /bok Bokföring; /skatt nytt visar vad som är nytt"

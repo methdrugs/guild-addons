@@ -12,6 +12,11 @@ local _, ns = ...
 -- enough, "restart" when the release adds files the game only reads at
 -- start; shown in red under the version.
 ns.NOTES = {
+	{ "0.31", "2026-11-11", after = "reload", {
+		"Arbetsorder: en order kan säga vem som ska få det färdiga, om det inte är den som beställde. Det står i ordern (Skicka färdiga till), i raden i guildchatten och i brevet med materialet. Som hantverkare har du då en knapp Fyll i brev i ordern: brevet adresseras till mottagaren och det färdiga läggs i. Du trycker Send själv, och ordern blir Klar av sig själv när allt det färdiga har gått iväg.",
+		"Bokföring 0.6.3: kan ge Skatteverket priser på material. Ett fel vid AH-skanning är rättat (en vara som inte fanns ute tidigare samma dag).",
+		"Bokföring 0.6.3: klara inköpslistor tas bort ur Auctionator av sig själva: allt köpt, allt craftat, Done i Making now, eller äldre än tre dagar. Vill du behålla dem, kryssa ur rutan under Inställningar.",
+	} },
 	{ "0.30", "2026-11-10", after = "reload", {
 		"Arbetsorder: avbryter du en order räknas materialet du redan skickat på dina andra öppna ordrar till samma hantverkare som behöver det. Listan visar bara förnamnet; hela namnet syns när du håller muspekaren över raden.",
 		"Arbetsorder: material i ett brev som Fyll i brev har fyllt i räknas på den ordern först, inte på en äldre order till samma hantverkare.",

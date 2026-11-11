@@ -170,6 +170,7 @@ function ns.RefreshWork(frame)
 				end)
 				row.done:SetScript("OnClick", function()
 					p.done = true
+					ns.CleanLists()
 					ns.RefreshWork(frame)
 				end)
 				row.done:Show()

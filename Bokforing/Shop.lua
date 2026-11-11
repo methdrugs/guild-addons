@@ -132,12 +132,10 @@ function ns.Shop(id, crafts, raw, tries)
 end
 
 -- A finished list out of Auctionator (Zach 9/11). Only through its API;
--- /bok test says whether this Auctionator has the function.
+-- /bok test says whether this Auctionator has the function. True when gone.
 function ns.DeleteList(name)
 	local api = Auctionator and Auctionator.API and Auctionator.API.v1
-	if api and api.DeleteShoppingList and pcall(api.DeleteShoppingList, CALLER, name) then
-		ns.Print(string.format("everything on \"%s\" is bought; the list is removed from Auctionator.", name))
-	end
+	return api and api.DeleteShoppingList and pcall(api.DeleteShoppingList, CALLER, name) or false
 end
 
 -- A work order where he sends the materials (Zach 9/11): what the crafter

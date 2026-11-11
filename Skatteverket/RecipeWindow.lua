@@ -17,6 +17,76 @@ local COLOURS = { o = { 1, 0.5, 0.25 }, y = { 1, 1, 0 }, g = { 0.25, 0.75, 0.25 
 local frame, rows, reagents = nil, {}, {}
 local who, code, recipes, shown, collapsed, selected, offset, filterText = nil, nil, {}, {}, {}, nil, 0, ""
 
+-- BPP, billigast per poäng (Zach 11/11, the guild leader only): the
+-- member's recipes ranked by what one expected skill point costs to buy
+-- the materials for. Expected points by colour (orange sure, yellow
+-- likely, green a long shot); prices from Bokföring (vendor or Auctionator,
+-- the lower). A recipe whose own steps give points (RawPlan) counts them
+-- too, and is ranked by the raw materials when that is cheaper per point.
+local WEIGHT = { o = 1, y = 0.75, g = 0.25 }
+local COLOUR_WORD = { o = "orange", y = "gul", g = "grön" }
+local bpp, ranked, info, rankPending = false, {}, {}, false
+
+local function CanBPP()
+	return IsGuildLeader() and BokforingAPI and BokforingAPI.Price ~= nil
+end
+
+local function Cost(list, price)
+	local total = 0
+	for _, r in ipairs(list) do
+		local p = price(r.itemID)
+		if not p then return end
+		total = total + p * r.count
+	end
+	return total
+end
+
+local function Rank()
+	wipe(ranked)
+	wipe(info)
+	rankPending = false
+	if not CanBPP() then return end
+	local price = BokforingAPI.Price
+	for _, r in ipairs(recipes) do
+		local points = r.key and WEIGHT[r.colour]
+		local d = points and ns.RecipeData(r.key)
+		if points and not d then rankPending = true end
+		if d and #d.reagents > 0 then
+			local best = { cost = Cost(d.reagents, price), points = points }
+			local raw, steps = ns.RawPlan(who, r.key, 1)
+			if raw then
+				local p = points
+				for _, st in ipairs(steps) do p = p + st.crafts * (WEIGHT[st.colour] or 0) end
+				local c = Cost(raw, price)
+				if c and (not best.cost or c / p < best.cost / best.points) then best = { cost = c, points = p, steps = steps } end
+			end
+			if best.cost then best.per = best.cost / best.points end
+			info[r] = best
+			table.insert(ranked, r)
+		end
+	end
+	-- Cheapest first; those without a price last, by name.
+	table.sort(ranked, function(a, b)
+		local x, y = info[a].per, info[b].per
+		if x and y and x ~= y then return x < y end
+		if (x == nil) ~= (y == nil) then return x ~= nil end
+		return a.name < b.name
+	end)
+end
+
+-- "1g 20s" or "35s 40c": short enough for a row.
+local function Short(copper)
+	copper = math.floor(copper + 0.5)
+	local g, s, c = math.floor(copper / 10000), math.floor(copper / 100) % 100, copper % 100
+	if g > 0 then return string.format("%dg %ds", g, s) end
+	if s > 0 then return string.format("%ds %dc", s, c) end
+	return c .. "c"
+end
+
+local function Decimal(n)
+	return (string.format("%.2f", n):gsub("%.?0+$", ""):gsub("%.", ","))
+end
+
 local function Text(parent, template, ...)
 	local fs = parent:CreateFontString(nil, "OVERLAY", template)
 	fs:SetPoint(...)
@@ -46,6 +116,23 @@ local function Tooltip(self)
 	if not self.link then return end
 	GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 	GameTooltip:SetHyperlink(self.link)
+	local b = bpp and self.row and info[self.row]
+	if b then
+		GameTooltip:AddLine(" ")
+		if b.per then
+			GameTooltip:AddLine(string.format("BPP: %s per poäng", Short(b.per)), 1, 0.82, 0)
+			GameTooltip:AddLine(string.format("Ett craft kostar %s och ger ungefär %s poäng.", Short(b.cost), Decimal(b.points)), 1, 1, 1, true)
+		else
+			GameTooltip:AddLine("Inget pris för allt som behövs: öppna Auctionator och skanna.", 1, 0.3, 0.3, true)
+		end
+		if b.steps then
+			local made = {}
+			for _, st in ipairs(b.steps) do
+				table.insert(made, string.format("%d %s (%s)", st.crafts, ns.ItemName(st.itemID) or "...", COLOUR_WORD[st.colour] or "?"))
+			end
+			GameTooltip:AddLine("Med råvaror, hen gör själv: " .. table.concat(made, ", "), 0.6, 0.8, 1, true)
+		end
+	end
 	GameTooltip:Show()
 end
 
@@ -61,6 +148,12 @@ local function Visible()
 	wipe(shown)
 	local header, pending = nil, {}
 	local text = filterText:lower()
+	if bpp then
+		for _, r in ipairs(ranked) do
+			if text == "" or r.name:lower():find(text, 1, true) then table.insert(shown, r) end
+		end
+		return
+	end
 	local function Flush()
 		if header and (#pending > 0 or text == "") then
 			table.insert(shown, header)
@@ -193,6 +286,8 @@ local function Build()
 		row.text = Text(row, "GameFontNormal", "LEFT", 18, 0)
 		row.text:SetWidth(W - 60)
 		row.text:SetWordWrap(false)
+		row.cost = Text(row, "GameFontHighlightSmall", "RIGHT", -4, 0)
+		row.cost:SetJustifyH("RIGHT")
 		row:SetScript("OnClick", function(self)
 			local r = self.row
 			if not r then return end
@@ -281,6 +376,24 @@ local function Build()
 	frame.order:SetScript("OnClick", function()
 		if who and selected and selected.key then ns.OrderDialog(who, selected.key) end
 	end)
+	frame.bpp = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+	frame.bpp:SetSize(50, 22)
+	frame.bpp:SetText("BPP")
+	frame.bpp:SetPoint("BOTTOMLEFT", 6, 6)
+	frame.bpp:SetScript("OnClick", function(self)
+		bpp = not bpp
+		offset = 0
+		if bpp then self:LockHighlight() else self:UnlockHighlight() end
+		ns.RefreshRecipeWindow()
+	end)
+	frame.bpp:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_TOP")
+		GameTooltip:AddLine("Billigast per poäng")
+		GameTooltip:AddLine("Recepten sorterade efter vad en färdighetspoäng kostar i material för den här medlemmen. Orange ger 1 poäng, gul ungefär 0,75, grön 0,25, grå ingenting. Priser från säljare och Auctionator, det lägre. Gör hen själv en reagens som ger poäng räknas råvarorna när det blir billigare per poäng.", 1, 1, 1, true)
+		GameTooltip:AddLine("Klicka igen för vanliga listan. Bara du ser knappen.", 0.7, 0.7, 0.7, true)
+		GameTooltip:Show()
+	end)
+	frame.bpp:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	-- Inside the details at the bottom: the buttons take the whole width.
 	frame.note = Text(detail, "GameFontDisableSmall", "BOTTOMLEFT", 10, 6)
 	frame.note:SetWidth(W - 40)
@@ -321,8 +434,13 @@ function ns.RefreshRecipeWindow(quiet)
 	if selected and selected.key then
 		for _, r in ipairs(recipes) do if r.key == selected.key then selected = r end end
 	end
+	if bpp and (not CanBPP() or who == ns.Me()) then
+		bpp = false
+		frame.bpp:UnlockHighlight()
+	end
+	if bpp and (not quiet or rankPending) then Rank() end
 	if not selected then
-		for _, r in ipairs(recipes) do if r.key then selected = r break end end
+		for _, r in ipairs(bpp and ranked or recipes) do if r.key then selected = r break end end
 	end
 	Visible()
 	offset = math.max(0, math.min(offset, #shown - LIST_ROWS))
@@ -352,6 +470,8 @@ function ns.RefreshRecipeWindow(quiet)
 		local r = shown[i + offset]
 		row.row = r
 		row.link = nil
+		row.cost:SetText("")
+		row.text:SetWidth(bpp and W - 120 or W - 60)
 		if r and r.header then
 			row.toggle:SetTexture(collapsed[r.header] and "Interface\\Buttons\\UI-PlusButton-Up" or "Interface\\Buttons\\UI-MinusButton-Up")
 			row.toggle:Show()
@@ -367,7 +487,11 @@ function ns.RefreshRecipeWindow(quiet)
 			local c = COLOURS[r.colour] or { 1, 1, 1 }
 			row.text:SetTextColor(c[1], c[2], c[3])
 			row.link = ns.RecipeLink(r.key)
-			if r == selected then row.selected:Show() else row.selected:Hide() end
+			local b = bpp and info[r]
+			if b then row.cost:SetText(b.per and (Short(b.per) .. "/p") or "|cff808080inget pris|r") end
+			-- By key: the list is read anew every second, while BPP keeps its
+			-- ranking from the last full refresh (Zach 11/11: the grey bar went).
+			if selected and r.key == selected.key then row.selected:Show() else row.selected:Hide() end
 			row:Show()
 		else
 			row:Hide()
@@ -407,10 +531,11 @@ function ns.RefreshRecipeWindow(quiet)
 	end
 	-- Citizens only, both ends (Zach 9/11).
 	frame.order:SetShown(not ns.Locked())
+	frame.bpp:SetShown(CanBPP() and who ~= ns.Me())
 	if selected and selected.key and who ~= ns.Me() and ns.IsCitizen(who) then frame.order:Enable() else frame.order:Disable() end
 	if not quiet then
 		local online = ns.Online(who)
 		if online then frame.whisper:Enable() else frame.whisper:Disable() end
-		frame.note:SetText(online and "Shift-klicka för att länka i chatten." or "Offline just nu, skicka post.")
+		frame.note:SetText((bpp and "BPP: billigast per poäng först. " or "") .. (online and "Shift-klicka för att länka i chatten." or "Offline just nu, skicka post."))
 	end
 end

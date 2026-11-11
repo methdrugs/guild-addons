@@ -73,11 +73,19 @@ function ns.ServeBoard()
 	for name, m in pairs(ns.db.members) do
 		-- Only people in the guild now.
 		if not roster or roster[name] then
-			-- His own alts' versions may not be published yet (Zach 10/11).
-			local mine = m.leaderAccount or (m.account and m.account == ns.db.account)
+			-- His own account's versions (Zach 10/11): blank while his build is
+			-- a test, the published versions once `wowaddons publish` has run,
+			-- so the popup goes out with them (Zach 11/11).
+			local version, swed, bok = m.version or "", m.swed or "", m.bok or ""
+			if m.leaderAccount or (m.account and m.account == ns.db.account) or name == ns.Me() then
+				if ns.PUBLISHED then
+					version, swed, bok = ns.VERSION, ns.SwedbankVersion(), ns.BokforingVersion()
+				else
+					version, swed, bok = "", "", ""
+				end
+			end
 			local row = string.format("%s,%d,%d,%d,%d,%d,%s,%s,%s,%s,%s", name, m.lastDeposit or 0, m.debtSince or 0,
-				m.lastSeen or 0, m.goodSince or 0, m.hasPaid and 1 or 0, mine and "" or (m.version or ""), mine and "" or (m.swed or ""),
-				mine and "" or (m.bok or ""),
+				m.lastSeen or 0, m.goodSince or 0, m.hasPaid and 1 or 0, version, swed, bok,
 				m.debtAge and math.floor(m.debtAge) or "", m.goodAge and math.floor(m.goodAge) or "")
 			if length + #row + 1 > 250 then
 				table.insert(chunks, "E;" .. table.concat(chunk, ";"))

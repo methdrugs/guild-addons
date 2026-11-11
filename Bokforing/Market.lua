@@ -66,7 +66,10 @@ function ns.RecordMarket(counts)
 		local days = market[item] or {}
 		local d = days[today]
 		if price then
-			d = d or { lo = price, hi = price, sum = 0, n = 0 }
+			-- A day first seen with none listed has only q (Zach 11/11: an
+			-- error at the next scan with a price).
+			d = d or {}
+			d.lo, d.hi, d.sum, d.n = d.lo or price, d.hi or price, d.sum or 0, d.n or 0
 			d.lo, d.hi = math.min(d.lo, price), math.max(d.hi, price)
 			d.sum, d.n = d.sum + price, d.n + 1
 		end

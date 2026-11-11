@@ -40,7 +40,12 @@
 local _, ns = ...
 
 ns.GUILD = "THÖNDERSTÖRM"
-ns.VERSION = "0.30"
+ns.VERSION = "0.31"
+-- Whether this build is out in WowUp (Zach 11/11): `wowaddons publish`
+-- sets it true in what it pushes and in his installed copy; a plain
+-- `wowaddons` install keeps it false, so the leader's test builds raise no
+-- update popup, and the published one does. Never true in the repo.
+ns.PUBLISHED = true
 ns.SCHEMA = 10
 ns.PREFIX = "SKATT"
 ns.GOOD_HOURS = 48
@@ -404,7 +409,7 @@ local function SendStatus()
 	if IsGuildLeader() then db.leaderAccount = true end
 	ns.Send(string.format("T;%s;%d;%d;%d;%d;%s;%s;%s;%d;%d;%s", ns.VERSION, char.lastDeposit or 0, debtDate,
 		goodDate, char.paid > 0 and 1 or 0, ns.SwedbankVersion(), ns.BokforingVersion(), ns.LastRestart(),
-		math.floor(debtAge), math.floor(goodAge), db.leaderAccount and "1" or ""))
+		math.floor(debtAge), math.floor(goodAge), (db.leaderAccount and not ns.PUBLISHED) and "1" or ""))
 	SendPrivate()
 end
 ns.SendStatus = SendStatus
@@ -783,8 +788,9 @@ end
 
 local function OnPublic(sender, parts)
 	-- The leader installs before publishing (Zach 10/11): his account's
-	-- versions are not in WowUp yet, so they raise no popup.
-	local leaderAccount = parts[12] == "1" or sender == ns.Leader()
+	-- test builds are not in WowUp yet, so they raise no popup; a published
+	-- one sends no flag and does (Zach 11/11).
+	local leaderAccount = parts[12] == "1"
 	if not leaderAccount then CheckVersion(parts[2], parts[7], parts[8], parts[9]) end
 	if sender == ns.Me() then return end
 	local m = db.members[sender] or { firstSeen = time() }
@@ -811,7 +817,8 @@ local function OnBoard(parts)
 	local me = ns.Me()
 	for i = 2, #parts do
 		local name, lastDeposit, debtSince, lastSeen, goodSince, hasPaid, version, swed, bok, debtAge, goodAge = strsplit(",", parts[i])
-		if name ~= ns.Leader() then CheckVersion(version, swed, bok) end
+		-- The leader's account comes blank while his build is unpublished (Leader.lua).
+		CheckVersion(version, swed, bok)
 		lastSeen = tonumber(lastSeen)
 		if name and lastSeen and name ~= me then
 			local m = db.members[name]

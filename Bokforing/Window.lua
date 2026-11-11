@@ -962,6 +962,16 @@ BokforingAPI = {
 	-- For Skatteverket's work orders where he sends the materials.
 	ShopForOrder = function(name, reagents, crafts, to, total) ns.ShopForOrder(name, reagents, crafts, to, total) end,
 	Refresh = function() if ns.Refresh then ns.Refresh() end end,
+	-- For BPP in Skatteverket's recipe window (Zach 11/11).
+	Price = function(item) return ns.BuyPrice(item) end,
+	-- Skatteverket's Inställningar (Zach 11/11): keep finished lists in Auctionator.
+	KeepLists = function(keep)
+		if keep ~= nil then
+			ns.db.keepLists = keep or nil
+			if not keep then ns.CleanLists() end
+		end
+		return ns.db.keepLists == true
+	end,
 }
 
 -- The button above whichever profession window this client has.

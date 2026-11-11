@@ -104,6 +104,14 @@ function ns.IsVendorGood(item)
 	return ns.db.vendor[item] ~= nil or VENDOR_GOODS[item] == true
 end
 
+-- What one costs to buy: the vendor's price or the auction house's,
+-- whichever is lower (Skatteverket's BPP, Zach 11/11); nil when neither is known.
+function ns.BuyPrice(item)
+	local v, a = ns.Vendor(item), ns.AH(item)
+	if v and a then return math.min(v, a) end
+	return v or a
+end
+
 -- A name the game has not loaded yet shows as "item 4416" and is asked
 -- for; when it arrives the window is drawn again (Zach 10/11: the line
 -- under a recipe said "item 4416" until opened a second time).

@@ -69,6 +69,32 @@ function ns.OpenPlan(id, crafts, raw)
 	end
 end
 
+-- Lists no longer on the go out of Auctionator (Zach 11/11: his filled up
+-- with lists for crafts long done): all bought, crafted out, marked Done,
+-- or older than three days. Once each; never a name a list on the go still
+-- uses. Off with "keepLists", under Skatteverket's Inställningar.
+function ns.CleanLists()
+	if ns.db.keepLists then return end
+	local now, live, gone = time(), {}, {}
+	for _, p in ipairs(Data().plans) do
+		if p.name and ns.OnTheGo(p, now) then live[p.name] = true end
+	end
+	for _, p in ipairs(Data().plans) do
+		if p.name and not p.cleaned and not ns.OnTheGo(p, now) then
+			p.cleaned = true
+			if not live[p.name] and not gone[p.name] and ns.DeleteList(p.name) then
+				gone[p.name] = true
+				table.insert(gone, p.name)
+			end
+		end
+	end
+	if #gone == 1 then
+		ns.Print(string.format("\"%s\" is done; the list is removed from Auctionator.", gone[1]))
+	elseif #gone > 1 then
+		ns.Print(string.format("%d finished lists removed from Auctionator.", #gone))
+	end
+end
+
 function ns.NewPlan(id, item, crafts, raw, buy, name, recipe, order)
 	local need, reagents = {}, {}
 	for reagent, n in pairs(buy) do need[reagent] = n end
@@ -95,11 +121,9 @@ local function Spend(item, count, money)
 			table.insert(Data().spends, { at = now, item = item, count = take, money = money * take / count, made = p.item })
 			ns.Print(string.format("counted %d x %s (%s) for %s.", take, ns.ItemName(item), ns.Money(money * take / count), p.name or "a list"))
 			left = left - take
-			-- All bought: the Auctionator list goes (Zach 9/11), where its
-			-- API can delete one.
-			if not Open(p, now) and p.name then ns.DeleteList(p.name) end
 		end
 	end
+	ns.CleanLists()
 end
 
 -- An auction house buy he confirmed: counted once his gold drops.
@@ -215,6 +239,7 @@ local function Crafted(id)
 	local e = Expected(id, r.profession)
 	table.insert(Data().crafts, { at = time(), recipe = id, item = r.item, qty = r.qty or 1, cost = e and e.cost, sells = e and e.sells })
 	ns.lastCraft = string.format("%s, %s", r.name or ns.ItemName(r.item), date("%H:%M"))
+	ns.CleanLists()
 	if ns.Refresh then ns.Refresh() end
 end
 
@@ -623,6 +648,8 @@ events:SetScript("OnEvent", function(_, event, unit, _, spell)
 	if event == "PLAYER_LOGIN" then
 		Prune()
 		Hooks()
+		-- After Auctionator has loaded its lists.
+		C_Timer.After(10, ns.CleanLists)
 	elseif event == "PLAYER_MONEY" then
 		MoneyChanged()
 	elseif event == "COMMODITY_PURCHASE_FAILED" then

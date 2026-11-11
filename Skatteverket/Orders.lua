@@ -18,7 +18,9 @@
 --        or trade (Zach 10/11); also the 14th field of O
 --   O, 15th field (0.30): raw materials item:count,... sent in place of the
 --        recipe's reagents; 16th: what the crafter makes of them first,
---        item:crafts,... (Zach 10/11)
+--        item:crafts,... (Zach 10/11); 17th (0.31): who gets the finished
+--        crafts when not the one ordering, set by the guild leader only
+--        (Zach 11/11: a smith's crafts straight to the enchanter)
 -- Guild channel:
 --   X        at login: send me my orders; whoever holds some answers by whisper
 
@@ -96,7 +98,7 @@ end
 
 local function Pack(o)
 	return table.concat({ "O", o.id, o.from, o.to, o.key, o.count, o.mats, o["until"], o.stamp, o.state, o.reason or "", Clean(o.note), o.tip or "",
-		EncodeSent(o.sent), EncodeList(o.raw, "count"), EncodeList(o.steps, "crafts") }, ";")
+		EncodeSent(o.sent), EncodeList(o.raw, "count"), EncodeList(o.steps, "crafts"), o.deliver or "" }, ";")
 end
 
 -- To the other party, and to the leader who keeps it for the offline.
@@ -143,7 +145,7 @@ local function ReagentCost(key, count)
 	return total
 end
 
-function ns.PlaceOrder(to, key, count, mats, days, note, raw, steps)
+function ns.PlaceOrder(to, key, count, mats, days, note, raw, steps, deliver)
 	local me = ns.Me()
 	if not me or not to or to == me or ns.Locked() then return end
 	if not ns.IsCitizen(to) then
@@ -154,6 +156,7 @@ function ns.PlaceOrder(to, key, count, mats, days, note, raw, steps)
 	local o = { id = string.format("%x%03x", now, math.random(0, 4095)), from = me, to = to, key = key, count = count, mats = mats,
 		["until"] = now + days * DAY, stamp = now, state = "ny", note = Clean(note), at = now }
 	if mats == "e" and raw then o.raw, o.steps = raw, steps end
+	if deliver and deliver ~= me and deliver ~= to then o.deliver = deliver end
 	if mats == "h" then
 		local cost = ReagentCost(key, count)
 		if cost then o.tip = math.floor(cost * TIP) end
@@ -161,8 +164,15 @@ function ns.PlaceOrder(to, key, count, mats, days, note, raw, steps)
 	Orders()[o.id] = o
 	Share(o, Pack(o))
 	-- In guild chat so Discord passes it on, online or offline (Zach 9/11).
-	SendChatMessage(string.format("@%s du har en ny arbetsorder: %s x%d! Titta under Arbetsorder i Yrken (/yrken).", to, RecipeName(key), count), "GUILD")
-	ns.Print(string.format("arbetsorder skickad till %s: %s x%d.", to, RecipeName(key), count))
+	-- With a recipient, both are named, so Discord reaches both and an
+	-- older client still sees where it goes (Zach 11/11).
+	if o.deliver then
+		SendChatMessage(string.format("@%s du har en ny arbetsorder: %s x%d! Skicka det färdiga till @%s. Titta under Arbetsorder i Yrken (/yrken).",
+			to, RecipeName(key), count, o.deliver), "GUILD")
+	else
+		SendChatMessage(string.format("@%s du har en ny arbetsorder: %s x%d! Titta under Arbetsorder i Yrken (/yrken).", to, RecipeName(key), count), "GUILD")
+	end
+	ns.Print(string.format("arbetsorder skickad till %s: %s x%d%s.", to, RecipeName(key), count, o.deliver and (", det färdiga till " .. o.deliver) or ""))
 	-- Sending the materials (Zach 9/11): Bokföring lists what to buy.
 	-- Raw materials go on the list in all, not per craft (Zach 10/11).
 	if mats == "e" and BokforingAPI and BokforingAPI.ShopForOrder then
@@ -221,7 +231,8 @@ end
 local function Tell(o, old)
 	local me = ns.Me()
 	if o.to == me and not old then
-		ns.Print(string.format("ny arbetsorder från %s: %s x%d, %s. Titta under Arbetsorder i Yrken.", o.from, RecipeName(o.key), o.count, MATS[o.mats] or "?"))
+		ns.Print(string.format("ny arbetsorder från %s: %s x%d, %s.%s Titta under Arbetsorder i Yrken.", o.from, RecipeName(o.key), o.count, MATS[o.mats] or "?",
+			o.deliver and (" Skicka det färdiga till " .. o.deliver .. ".") or ""))
 	elseif o.from == me and old and old.state ~= o.state then
 		ns.Print(string.format("%s: din arbetsorder %s x%d är nu %s%s.", o.to, RecipeName(o.key), o.count, STATE[o.state]:lower(),
 			o.reason and o.reason ~= "" and (" (" .. o.reason .. ")") or ""))
@@ -242,6 +253,8 @@ function ns.OnOrder(sender, parts)
 	-- Sent materials only grow; keep what was known.
 	o.sent = DecodeSent(parts[14], old and old.sent and DecodeSent(EncodeSent(old.sent)) or nil)
 	o.raw, o.steps = DecodeList(parts[15], "count"), DecodeList(parts[16], "crafts")
+	-- A recipient only from the guild leader's orders (Zach 11/11).
+	if parts[17] and parts[17] ~= "" and o.from == ns.Leader() then o.deliver = parts[17] end
 	Orders()[o.id] = o
 	Tell(o, old)
 	Changed()
@@ -337,6 +350,27 @@ local function UpdateRaw()
 	dialog.rawBox.text:SetText(string.format("Skicka råvaror: %s i stället för %s", table.concat(send, ", "), table.concat(made, ", ")))
 end
 
+-- A guild member from what was typed: the full name, or a first name or
+-- the start of one when only one member matches. nil for empty; nil and
+-- what is wrong when nobody or several match.
+function ns.FindMember(text)
+	text = strtrim(text or ""):lower()
+	if text == "" then return end
+	local roster = ns.RosterNames() or {}
+	for name in pairs(roster) do
+		if name:lower() == text then return name end
+	end
+	local hit
+	for name in pairs(roster) do
+		if name:lower():sub(1, #text) == text then
+			if hit then return nil, "Flera i guildet börjar så, skriv hela namnet." end
+			hit = name
+		end
+	end
+	if not hit then return nil, "Ingen i guildet heter så." end
+	return hit
+end
+
 -- A classic panel like the other THÖNDERSTÖRM windows (Zach 9/11: the first
 -- was a bare box), with the recipe's icon as portrait.
 local function BuildDialog()
@@ -420,6 +454,18 @@ local function BuildDialog()
 	dialog.note:SetAutoFocus(false)
 	dialog.note:SetMaxLetters(80)
 
+	-- The guild leader only (Zach 11/11): someone else gets the finished
+	-- crafts, so he is not the middleman. A first name is enough.
+	dialog.deliverLabel = Label(dialog, "Skicka till", 24, -310)
+	dialog.deliver = CreateFrame("EditBox", nil, dialog, "InputBoxTemplate")
+	dialog.deliver:SetSize(150, 20)
+	dialog.deliver:SetPoint("TOPLEFT", 140, -306)
+	dialog.deliver:SetAutoFocus(false)
+	dialog.deliver:SetMaxLetters(40)
+	dialog.deliverHint = dialog:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	dialog.deliverHint:SetPoint("LEFT", dialog.deliver, "RIGHT", 8, 0)
+	dialog.deliverHint:SetText("tomt: till dig")
+
 	dialog.warn = dialog:CreateFontString(nil, "OVERLAY", "GameFontRedSmall")
 	dialog.warn:SetPoint("BOTTOM", 0, 40)
 
@@ -439,7 +485,14 @@ local function BuildDialog()
 		-- The crafter must know what to expect (Zach 9/11): no default.
 		if not dialog.mats then dialog.warn:SetText("Välj vem som står för materialet.") return end
 		local raw = dialog.mats == "e" and dialog.raw and dialog.rawBox:GetChecked()
-		ns.PlaceOrder(dialog.to, dialog.key, count, dialog.mats, dialog.days, dialog.note:GetText(), raw and dialog.raw or nil, raw and dialog.steps or nil)
+		local deliver
+		if dialog.deliver:IsShown() then
+			local problem
+			deliver, problem = ns.FindMember(dialog.deliver:GetText())
+			if problem then dialog.warn:SetText(problem) return end
+			if deliver == dialog.to then dialog.warn:SetText("Skicka till kan inte vara hantverkaren själv.") return end
+		end
+		ns.PlaceOrder(dialog.to, dialog.key, count, dialog.mats, dialog.days, dialog.note:GetText(), raw and dialog.raw or nil, raw and dialog.steps or nil, deliver)
 		dialog:Hide()
 	end)
 	dialog:Hide()
@@ -461,6 +514,11 @@ function ns.OrderDialog(to, key)
 	dialog.rawBox:SetChecked(true)
 	UpdateRaw()
 	dialog.note:SetText("")
+	dialog.deliver:SetText("")
+	local leader = IsGuildLeader()
+	dialog.deliverLabel:SetShown(leader)
+	dialog.deliver:SetShown(leader)
+	dialog.deliverHint:SetShown(leader)
 	dialog.warn:SetText("")
 	for _, b in ipairs(dialog.waits) do
 		if b.days == dialog.days then b:LockHighlight() else b:UnlockHighlight() end
@@ -494,10 +552,17 @@ local filling
 -- first, not on an older order to the same crafter (Zach 10/11: 4 Fine
 -- Thread for the new order were counted on an old one).
 local filledFor
+-- The order whose finished crafts the crafter's last letter was filled
+-- with, for Klar once they have all gone (Zach 11/11).
+local craftsFor
+
+-- Every bag worn, the reagent bag slot too (Zach 11/11: Tin Bar in an
+-- Apprentice's Mining Bag was not found).
+local LAST_BAG = math.max(NUM_TOTAL_EQUIPPED_BAG_SLOTS or 0, (NUM_BAG_SLOTS or 4) + (NUM_REAGENTBAG_SLOTS or 1))
 
 local function FindStack(item)
 	local best
-	for bag = 0, NUM_BAG_SLOTS or 4 do
+	for bag = 0, LAST_BAG do
 		for slot = 1, (Bag.GetContainerNumSlots and Bag.GetContainerNumSlots(bag)) or 0 do
 			local info = Bag.GetContainerItemInfo(bag, slot)
 			if info and info.itemID == item and not info.isLocked then
@@ -515,16 +580,24 @@ local function FreeAttachment()
 	end
 end
 
+-- The finished crafts, for the crafter's letter to the recipient.
+local function Crafts(o)
+	local d = ns.RecipeData and ns.RecipeData(o.key)
+	if not d or not d.item then return {} end
+	return { { itemID = d.item, need = o.count * (d.makes or 1) } }
+end
+
 -- What still has to go in this letter: needed, minus sent, minus attached.
-local function StillMissing(o)
+-- crafts: the crafter's letter of finished crafts, nothing counted as sent.
+local function StillMissing(o, crafts)
 	local attached = {}
 	for i = 1, ATTACHMENTS_MAX_SEND or 12 do
 		local _, item, _, count = GetSendMailItem(i)
 		if item then attached[item] = (attached[item] or 0) + (count or 1) end
 	end
 	local out = {}
-	for _, r in ipairs(Reagents(o)) do
-		local left = r.need - (o.sent and o.sent[r.itemID] or 0) - (attached[r.itemID] or 0)
+	for _, r in ipairs(crafts and Crafts(o) or Reagents(o)) do
+		local left = r.need - (not crafts and o.sent and o.sent[r.itemID] or 0) - (attached[r.itemID] or 0)
 		if left > 0 then table.insert(out, { item = r.itemID, count = left }) end
 	end
 	return out
@@ -534,7 +607,7 @@ local function FillStep()
 	local f = filling
 	if not f then return end
 	if not (MailFrame and MailFrame:IsShown()) then filling = nil return end
-	local missing = StillMissing(f.order)
+	local missing = StillMissing(f.order, f.crafts)
 	local nextItem
 	for _, m in ipairs(missing) do
 		if not f.lacking[m.item] then nextItem = m break end
@@ -546,7 +619,7 @@ local function FillStep()
 		if #short > 0 then
 			ns.Print("finns inte i väskorna: " .. table.concat(short, ", ") .. ". Köp dem och tryck Fyll i brev igen.")
 		end
-		ns.Print("brevet till " .. f.order.to .. " är ifyllt. Kontrollera det och tryck Send.")
+		ns.Print("brevet till " .. f.to .. " är ifyllt. Kontrollera det och tryck Send." .. (f.crafts and " Ordern blir Klar när allt det färdiga har gått iväg." or ""))
 		return
 	end
 	local free = FreeAttachment()
@@ -574,19 +647,37 @@ local function FillStep()
 	C_Timer.After(0.4, FillStep)
 end
 
-local function FillMail(o)
+-- The letter's text box, as each client names it.
+local function MailBody()
+	local box = SendMailBodyEditBox or (MailEditBox and MailEditBox.ScrollBox and MailEditBox.ScrollBox.EditBox)
+	return box and box.SetText and box
+end
+
+-- crafts: the crafter sends the finished crafts to the recipient the
+-- guild leader named (Zach 11/11), instead of the orderer sending materials.
+local function FillMail(o, crafts)
 	if not (MailFrame and MailFrame:IsShown()) then
 		ns.Print("gå till en brevlåda, öppna arbetsordern och tryck Fyll i brev.")
 		return
 	end
 	if CursorHasItem() then ns.Print("släpp det du håller i först.") return end
 	if not Bag.GetContainerItemInfo or not ClickSendMailItemButton then return end
-	if #StillMissing(o) == 0 then ns.Print("allt material till den här ordern är redan skickat eller bifogat.") return end
+	if #StillMissing(o, crafts) == 0 then
+		ns.Print(crafts and "det färdiga är redan bifogat, eller så är receptet inte laddat än." or "allt material till den här ordern är redan skickat eller bifogat.")
+		return
+	end
 	if MailFrameTab_OnClick then MailFrameTab_OnClick(nil, 2) end
-	SendMailNameEditBox:SetText(o.to)
+	local to = crafts and o.deliver or o.to
+	SendMailNameEditBox:SetText(to)
 	if SendMailSubjectEditBox then SendMailSubjectEditBox:SetText(string.format("Arbetsorder: %s x%d", RecipeName(o.key), o.count)) end
-	filling = { order = o, lacking = {} }
-	filledFor = o
+	-- In the materials letter too (Zach 11/11), so the crafter sees it there.
+	local body = MailBody()
+	if body then
+		if crafts then body:SetText(string.format("Från %s:s arbetsorder.", o.from))
+		elseif o.deliver then body:SetText("yoyoyo! skicka allt till " .. o.deliver .. " sen :)") end
+	end
+	filling = { order = o, lacking = {}, crafts = crafts, to = to }
+	if crafts then craftsFor = o else filledFor = o end
 	FillStep()
 end
 
@@ -691,6 +782,9 @@ local function BuildView()
 	view.a = CreateFrame("Button", nil, view, "UIPanelButtonTemplate")
 	view.a:SetSize(90, 22)
 	view.a:SetPoint("RIGHT", view.b, "LEFT", -4, 0)
+	view.c = CreateFrame("Button", nil, view, "UIPanelButtonTemplate")
+	view.c:SetSize(90, 22)
+	view.c:SetPoint("RIGHT", view.a, "LEFT", -4, 0)
 	view:Hide()
 end
 
@@ -721,6 +815,7 @@ ShowOrder = function(o)
 		string.format("|cffffd100Från:|r %s   |cffffd100Till:|r %s", o.from, o.to),
 		"|cffffd100Material:|r " .. (MATS[o.mats] or "?"),
 	}
+	if o.deliver then table.insert(lines, "|cffffd100Skicka färdiga till:|r |cff40ff40" .. o.deliver .. "|r") end
 	local status = SentStatus(o)
 	if status then table.insert(lines, "|cffffd100Skickat:|r " .. status) end
 	if o.tip then table.insert(lines, "|cffffd100Dricks:|r ungefär " .. ns.Money(o.tip)) end
@@ -775,6 +870,8 @@ ShowOrder = function(o)
 		ViewButton(view.a, nil)
 		ViewButton(view.b, nil)
 	end
+	-- The crafter's letter of finished crafts to the recipient (Zach 11/11).
+	ViewButton(view.c, (incoming and state == "accepterad" and o.deliver) and "Fyll i brev" or nil, function() FillMail(o, true) end)
 	view:Show()
 end
 ns.ShowOrder = function(o) ShowOrder(o) end
@@ -847,6 +944,9 @@ if SendMail then
 		end
 		local prefer = filledFor and Matches(target, filledFor.to) and filledFor or nil
 		pendingMail = next(items) and { to = target, items = items, prefer = prefer } or nil
+		-- The crafter's letter of finished crafts to the recipient.
+		local o = craftsFor
+		if pendingMail and o and o.deliver and Matches(target, o.deliver) then pendingMail.crafts = o end
 	end)
 end
 
@@ -873,6 +973,21 @@ tracker:SetScript("OnEvent", function(_, event, a, b)
 	if not ns.db then return end
 	if event == "MAIL_SEND_SUCCESS" then
 		if pendingMail then Delivered(pendingMail.to, pendingMail.items, pendingMail.prefer) end
+		-- Klar by itself once all the finished crafts have gone to the
+		-- recipient (Zach 11/11), over one letter or several.
+		local o = pendingMail and pendingMail.crafts
+		local c = o and Crafts(o)[1]
+		if c and State(o) == "accepterad" then
+			o.craftsSent = (o.craftsSent or 0) + (pendingMail.items[c.itemID] or 0)
+			if o.craftsSent >= c.need then
+				SetState(o, "klar")
+				craftsFor = nil
+				ns.Print(string.format("allt det färdiga har gått till %s; arbetsordern %s x%d är Klar.", o.deliver, RecipeName(o.key), o.count))
+				if ns.RefreshOrderView then ns.RefreshOrderView(o) end
+			else
+				ns.Print(string.format("%d av %d skickade till %s; fyll i nästa brev.", o.craftsSent, c.need, o.deliver))
+			end
+		end
 		pendingMail = nil
 	elseif event == "MAIL_FAILED" then
 		pendingMail = nil
