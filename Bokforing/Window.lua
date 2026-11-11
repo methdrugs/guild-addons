@@ -1089,6 +1089,8 @@ BokforingAPI = {
 	Work = function() return ns.WorkSummary() end,
 	-- For Skatteverket's work orders where he sends the materials.
 	ShopForOrder = function(name, reagents, crafts, to, total, id) ns.ShopForOrder(name, reagents, crafts, to, total, id) end,
+	-- The crafter's side of an order where they bring the materials (Zach 11/11).
+	ShopForCraft = function(name, reagents, crafts, from, id) ns.ShopForCraft(name, reagents, crafts, from, id) end,
 	Refresh = function() if ns.Refresh then ns.Refresh() end end,
 	-- For BPP in Skatteverket's recipe window (Zach 11/11).
 	Price = function(item) return ns.BuyPrice(item) end,

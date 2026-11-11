@@ -309,6 +309,7 @@ ns.HELP = {
 	{ "/swedbank", "låna guld av guildet" },
 	{ "/bok", "Bokföring, om du har den" },
 	{ "/skatt nytt", "vad som är nytt, och vem som kör vilken version" },
+	{ "/skatt version", "dina versioner, och om en nyare har setts i guildet" },
 	{ "/skatt lämnat", "vem som har lämnat guildet de senaste 30 dagarna" },
 	{ "/skatt hjälp", "villkor och vanliga frågor" },
 	{ "/skatt sats 5", "sätt skattesatsen", leader = true },
@@ -722,6 +723,7 @@ SkatteverketAPI = {
 	end,
 	-- Whether a work order still waits for its materials; see Orders.lua.
 	OrderMaterialsDone = function(id) return ns.OrderMaterialsDone(id) end,
+	OrderOpen = function(id) return ns.OrderOpen(id) end,
 	-- A member's standing as last seen, or nil if unknown.
 	MemberStanding = function(name)
 		local m = ns.db and ns.db.members[name]

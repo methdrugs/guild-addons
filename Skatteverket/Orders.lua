@@ -253,6 +253,13 @@ local function SetState(o, state, reason)
 	o.state, o.reason, o.stamp = state, reason, ns.Now()
 	Share(o, table.concat({ "D", o.id, state, reason or "", o.stamp }, ";"))
 	if state == "avbruten" and o.from == ns.Me() then MoveSent(o) end
+	-- The crafter takes on the materials (Zach 11/11): Bokföring lists what
+	-- the bags lack.
+	if state == "accepterad" and o.to == ns.Me() and o.mats == "h" and BokforingAPI and BokforingAPI.ShopForCraft then
+		local reagents = {}
+		for _, r in ipairs(Reagents(o)) do table.insert(reagents, { r.itemID, r.need }) end
+		if #reagents > 0 then BokforingAPI.ShopForCraft(RecipeName(o.key), reagents, o.count, o.from, o.id) end
+	end
 	Changed()
 end
 
@@ -1085,6 +1092,14 @@ local function Stage(o, incoming)
 	if sent > 0 then return 2, 4, string.format("%s %d/%d", incoming and "Mottaget" or "Skickat", sent, need), YELLOW end
 	if not incoming and need > 0 and ready then return 2, 4, "Köpt", YELLOW end
 	return 1, 4, "Beställd", GREY
+end
+
+-- For Bokföring's Making now: whether an order is still open (ny or
+-- accepterad), nil for an order not known here (Zach 11/11).
+function ns.OrderOpen(id)
+	local o = Orders()[id]
+	if not o then return nil end
+	return OPEN[State(o)] == true
 end
 
 -- For Bokföring's Making now (Zach 11/11): true once the order no longer

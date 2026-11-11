@@ -51,14 +51,21 @@ local function Lines()
 		for item, n in pairs(p.need or {}) do
 			if (p.bought[item] or 0) < n then bought = false end
 		end
-		local api = SkatteverketAPI
-		local sent = p.orderId and api and api.OrderMaterialsDone and api.OrderMaterialsDone(p.orderId)
+		local api, sent = SkatteverketAPI, nil
+		if p.crafter then
+			-- His to craft (Zach 11/11): on show while the order is open.
+			local open = p.orderId and api and api.OrderOpen and api.OrderOpen(p.orderId)
+			if open ~= nil then sent = not open end
+		else
+			sent = p.orderId and api and api.OrderMaterialsDone and api.OrderMaterialsDone(p.orderId)
+		end
 		if sent == nil then sent = bought end
 		local open = p.order and not sent or (not p.order and made < p.crafts)
 		if not p.done and not p.flip and now - p.at < SHOW_DAYS * 86400 and open then
 			table.insert(lines, { plan = p, made = made })
 			local left = p.order and p.crafts or p.crafts - made
-			table.insert(lines, { label = p.order and string.format("To send to %s", p.order) or string.format("For the %d crafts left", left) })
+			table.insert(lines, { label = p.crafter and string.format("To craft for %s", p.order)
+				or p.order and string.format("To send to %s", p.order) or string.format("For the %d crafts left", left) })
 			for _, r in ipairs(Reagents(p)) do
 				-- Rounded: an order's raw materials are kept per craft as fractions.
 				local need, have = math.floor(r[2] * left + 0.5), Count(r[1])

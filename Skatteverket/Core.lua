@@ -40,7 +40,7 @@
 local _, ns = ...
 
 ns.GUILD = "THÖNDERSTÖRM"
-ns.VERSION = "0.32"
+ns.VERSION = "0.33"
 -- Whether this build is out in WowUp (Zach 11/11): `wowaddons publish`
 -- sets it true in what it pushes and in his installed copy; a plain
 -- `wowaddons` install keeps it false, so the leader's test builds raise no
@@ -775,12 +775,28 @@ local function ShowUpdate()
 	StaticPopup_Show("SKATTEVERKET_UPDATE", "Ny version finns:\n\n" .. table.concat(lines, "\n") .. "\n\n" .. after .. "\n\nDin historik följer med.")
 end
 
-local function Newer(name, seen, own)
+-- Who each newest version came from, and the leader's test builds left
+-- out, for /skatt version (Zach 11/11: a popup that did not come).
+local newerFrom, testFrom = {}, {}
+
+local function Newer(name, seen, own, from)
 	if not own or own == "-" or VersionNumber(seen) <= VersionNumber(own) then return end
 	if VersionNumber(seen) > VersionNumber(newer[name]) then
-		newer[name] = seen
+		newer[name], newerFrom[name] = seen, from
 		if ns.RefreshTodo then ns.RefreshTodo() end
 	end
+end
+
+-- /skatt version: this client's versions, the newest seen and from whom,
+-- whether the popup came, and test builds left out.
+function ns.PrintVersions()
+	Print(string.format("du kör Skatteverket %s, Swedbank %s, Bokföring %s.", ns.VERSION, ns.SwedbankVersion(), ns.BokforingVersion()))
+	if not next(newer) then Print("ingen nyare version sedd den här sessionen.") end
+	for _, name in ipairs({ "Skatteverket", "Swedbank", "Bokföring" }) do
+		if newer[name] then Print(string.format("nyare %s %s, sedd hos %s.", name, newer[name], newerFrom[name] or "?")) end
+	end
+	Print(updateShown and "uppdateringsrutan har visats den här sessionen." or "uppdateringsrutan har inte visats den här sessionen.")
+	for who, v in pairs(testFrom) do Print(string.format("testversion %s från %s räknas inte (guildledarens konto).", v, who)) end
 end
 
 -- What this client is behind on, as "Skatteverket 0.32" lines (Zach 11/11:
@@ -793,11 +809,11 @@ function ns.Behind()
 	return out
 end
 
-local function CheckVersion(skatt, swed, bok, restart)
+local function CheckVersion(skatt, swed, bok, restart, from)
 	if restart and restart ~= "" and VersionNumber(restart) > VersionNumber(restartSince) then restartSince = restart end
-	Newer("Skatteverket", skatt, ns.VERSION)
-	Newer("Swedbank", swed, ns.SwedbankVersion())
-	Newer("Bokföring", bok, ns.BokforingVersion())
+	Newer("Skatteverket", skatt, ns.VERSION, from)
+	Newer("Swedbank", swed, ns.SwedbankVersion(), from)
+	Newer("Bokföring", bok, ns.BokforingVersion(), from)
 	if next(newer) and not updateShown then C_Timer.After(5, ShowUpdate) end
 end
 
@@ -807,7 +823,11 @@ local function OnPublic(sender, parts)
 	-- test builds are not in WowUp yet, so they raise no popup; a published
 	-- one sends no flag and does (Zach 11/11).
 	local leaderAccount = parts[12] == "1"
-	if not leaderAccount then CheckVersion(parts[2], parts[7], parts[8], parts[9]) end
+	if leaderAccount then
+		testFrom[sender] = parts[2]
+	else
+		CheckVersion(parts[2], parts[7], parts[8], parts[9], sender)
+	end
 	if sender == ns.Me() then return end
 	local m = db.members[sender] or { firstSeen = time() }
 	db.members[sender] = m
@@ -834,7 +854,7 @@ local function OnBoard(parts)
 	for i = 2, #parts do
 		local name, lastDeposit, debtSince, lastSeen, goodSince, hasPaid, version, swed, bok, debtAge, goodAge = strsplit(",", parts[i])
 		-- The leader's account comes blank while his build is unpublished (Leader.lua).
-		CheckVersion(version, swed, bok)
+		CheckVersion(version, swed, bok, nil, name and (name .. " (guildlistan)"))
 		lastSeen = tonumber(lastSeen)
 		if name and lastSeen and name ~= me then
 			local m = db.members[name]
@@ -1167,6 +1187,8 @@ SlashCmdList.SKATTEVERKET = function(msg)
 		ns.AchievementTest(rest)
 	elseif cmd == "prestationer" and ns.PRESTATIONER then
 		ns.ToggleWindow(7)
+	elseif cmd == "version" then
+		ns.PrintVersions()
 	elseif cmd == "ikontest" then
 		ns.IconTest()
 	elseif cmd == "tystsignera" then
@@ -1192,7 +1214,7 @@ SlashCmdList.SKATTEVERKET = function(msg)
 		if not IsGuildLeader() then Print("bara guildledaren kan göra det.") return end
 		ns.LeaderCommand(cmd, rest)
 	else
-		Print("/skatt öppnar fönstret, /skatt info visar din skatt, /skatt betala betalar vid guildbanken, /skatt anmälan visar din anmälan, /skatt yrken visar yrkesregistret, /skatt hjälp visar villkor och vanliga frågor, /skatt nytt visar vad som är nytt, /skatt prestationer visar prestationer.")
+		Print("/skatt öppnar fönstret, /skatt info visar din skatt, /skatt betala betalar vid guildbanken, /skatt anmälan visar din anmälan, /skatt yrken visar yrkesregistret, /skatt hjälp visar villkor och vanliga frågor, /skatt nytt visar vad som är nytt, /skatt version visar dina versioner, /skatt prestationer visar prestationer.")
 		Print("Guildledaren: /skatt sats 5, /skatt efterskänk Namn, /skatt kredit Namn 2g50s, /skatt synka.")
 	end
 end

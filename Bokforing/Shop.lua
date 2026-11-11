@@ -176,6 +176,39 @@ function ns.ShopForOrder(name, reagents, crafts, to, total, id)
 	for _, line in ipairs(vendor) do ns.Print("  vendor: " .. line) end
 end
 
+-- A work order he crafts with his own materials (Zach 11/11): on accepting,
+-- what the order needs beyond his bags goes on an Auctionator list, and the
+-- order shows under Making now while it is open. reagents are { itemID,
+-- count } for the whole order. The buys count as Arbetsordrar in History:
+-- the crafts go to whoever ordered them.
+function ns.ShopForCraft(name, reagents, crafts, from, id)
+	local buy, terms, vendor, perCraft = {}, {}, {}, {}
+	for _, r in ipairs(reagents) do
+		local missing = r[2] - Owned(r[1])
+		if missing > 0 then buy[r[1]] = (buy[r[1]] or 0) + missing end
+		table.insert(perCraft, { r[1], r[2] / crafts })
+	end
+	local listName = string.format("Bokföring: %s x%d åt %s", name, crafts, from)
+	local plan = ns.NewPlan(nil, nil, crafts, false, buy, listName, { name = name, qty = 1, reagents = perCraft }, from)
+	plan.orderId, plan.crafter = id, true
+	for item, count in pairs(buy) do
+		if ns.IsVendorGood(item) then
+			table.insert(vendor, string.format("%d x %s%s", count, ns.ItemName(item), ns.VendorWhere(item)))
+		else
+			table.insert(terms, SearchString(ns.ItemName(item), count))
+		end
+	end
+	if #terms == 0 and #vendor == 0 then
+		ns.Print(string.format("du har allt material till %s x%d åt %s i väskorna.", name, crafts, from))
+		return
+	end
+	local api = Auctionator and Auctionator.API and Auctionator.API.v1
+	if #terms > 0 and api and api.CreateShoppingList and pcall(api.CreateShoppingList, CALLER, listName, terms) then
+		ns.Print(string.format("material att köpa till arbetsordern ligger i Auctionator-listan \"%s\"; se Making now i /bok.", listName))
+	end
+	for _, line in ipairs(vendor) do ns.Print("  vendor: " .. line) end
+end
+
 -- A list of items and counts, for Today's buys (Zach 10/11).
 function ns.BuyList(listName, wanted)
 	local terms, names = {}, {}

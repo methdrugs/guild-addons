@@ -1,7 +1,7 @@
 ## Interface: 16001
 ## Title: THÖNDERSTÖRM – Bokföring
 ## Notes: Which of your recipes earn the most on the auction house and actually sell, shopping lists for Auctionator, and what your crafting really earned. Needs Auctionator.
-## Version: 0.6.4
+## Version: 0.6.5
 ## Dependencies: Auctionator
 ## SavedVariables: BokforingDB
 Core.lua

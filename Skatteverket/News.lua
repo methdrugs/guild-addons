@@ -12,6 +12,10 @@ local _, ns = ...
 -- enough, "restart" when the release adds files the game only reads at
 -- start; shown in red under the version.
 ns.NOTES = {
+	{ "0.33", "2026-11-11", after = "reload", {
+		"/skatt version visar vilka versioner du kör, och om någon i guildet har en nyare och vem.",
+		"Arbetsorder: accepterar du en order där du löser materialet gör Bokföring en inköpslista i Auctionator med det som inte redan finns i dina väskor, och ordern syns under Making now tills den är klar. Köpen räknas som Arbetsordrar i Bokförings historik.",
+	} },
 	{ "0.32", "2026-11-11", after = "reload", {
 		"Nytt: har någon i guildet en nyare version än du visar blixten en liten lapp, samma som Nytt-fliken, med Uppdatera och vilka versioner när du håller muspekaren över,, och Nytt visar dem överst, tills du har uppdaterat. Vem som kör vilken version har en egen flik, Versioner, i Nytt.",
 		"Arbetsorder: listan visar bara pågående ordrar. Avböjda, avbrutna, utgångna och de som varit Klar i ett dygn syns med rutan Visa avslutade.",
