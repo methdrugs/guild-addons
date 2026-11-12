@@ -46,10 +46,15 @@ local WINDOWS = {
 	nytt = { name = "SkatteverketNyttFrame", title = "Nytt", w = MEMBER_W, h = FRAME_H, art = "Interface\\Icons\\INV_Misc_Note_01" },
 	options = { name = "SkatteverketOptionsFrame", title = "Inställningar", w = MEMBER_W, h = 480, art = "Interface\\Icons\\INV_Misc_Gear_01" },
 	prestationer = { name = "SkatteverketPrestationerFrame", title = "Prestationer", w = MEMBER_W, h = FRAME_H },
+	-- Folkvald representant and Kontakta oss! (Zach 11/11): Folk.lua, Bidrag.lua, Contact.lua.
+	folk = { name = "SkatteverketFolkFrame", title = "Folkvald representant", w = 780, h = 640, art = "Interface\\Icons\\INV_Scroll_05" },
+	kontakt = { name = "SkatteverketKontaktFrame", title = "Kontakta oss!", w = MEMBER_W, h = 520, art = "Interface\\Icons\\INV_Letter_15" },
 }
 -- Min anmälan sits with Inställningar (Zach 9/11): that is where things are changed.
 -- 9: Lämnat, the leader's tab of the Skatt window (Zach 10/11).
-local PAGE_WINDOW = { "skatt", "yrken", "options", "nytt", "options", "swedbank", "prestationer", "yrken", "skatt", "nytt" }
+-- 11 Folkvald representant and 12 Socialbidrag, 13 Kontakta oss! (Zach 11/11).
+-- Socialbidrag is a side tab of Skatt since 12/11: the guild tax pays it.
+local PAGE_WINDOW = { "skatt", "yrken", "options", "nytt", "options", "swedbank", "prestationer", "yrken", "skatt", "nytt", "folk", "skatt", "kontakt" }
 
 local frame, rows, headers, sorted = nil, {}, {}, {}
 local offset, selected, leaderMode = 0, nil, false
@@ -374,9 +379,13 @@ local function Build(id)
 		f.left = CreateFrame("Frame", nil, f)
 		f.left:SetAllPoints()
 		ns.BuildLeavers(f.left)
+		f.bidrag = CreateFrame("Frame", nil, f)
+		f.bidrag:SetAllPoints()
+		ns.BuildBidrag(f.bidrag)
 		f.sideTabs = {
 			SideTab(f, 1, "INV_Misc_Coin_02", "Ställning", function() ns.ShowTab(1) end),
-			SideTab(f, 2, "Ability_Rogue_Sprint", "Lämnat", function() ns.ShowTab(9) end),
+			SideTab(f, 2, "INV_Misc_Bag_10", "Socialbidrag", function() ns.ShowTab(12) end),
+			SideTab(f, 3, "Ability_Rogue_Sprint", "Lämnat", function() ns.ShowTab(9) end),
 		}
 	elseif id == "yrken" then
 		f.professions = CreateFrame("Frame", nil, f)
@@ -426,6 +435,14 @@ local function Build(id)
 		f.achievements = CreateFrame("Frame", nil, f)
 		f.achievements:SetAllPoints()
 		ns.BuildAchievements(f.achievements)
+	elseif id == "folk" then
+		f.folk = CreateFrame("Frame", nil, f)
+		f.folk:SetAllPoints()
+		ns.BuildFolk(f.folk)
+	elseif id == "kontakt" then
+		f.contact = CreateFrame("Frame", nil, f)
+		f.contact:SetAllPoints()
+		ns.BuildContact(f.contact)
 	end
 	if def.locked then f.locked = LockedPage(f) end
 
@@ -451,6 +468,8 @@ local function Layout(w)
 	-- Someone not approved who has a loan running still gets Swedbank, to
 	-- see and pay it back; applying stays closed (Zach 8/11).
 	if w.id == "swedbank" and locked and SwedbankPanel and SwedbankPanel.HasLoan and SwedbankPanel.HasLoan() then locked = nil end
+	-- Socialbidrag is for everyone in the guild, signed or not.
+	if w.id == "skatt" and page == 12 then locked = nil end
 	w.open = not locked
 	if f.locked then
 		SetShown(f.locked, locked)
@@ -480,13 +499,18 @@ local function Layout(w)
 		end
 		SetShown(f.lead, leaderMode)
 		SetShown(f.leaderInfo, leaderMode)
-		-- Lämnat is the leader's only.
+		-- Lämnat is the leader's only; Socialbidrag everyone's.
 		local leftPage = leaderMode and not locked and page == 9
-		f.tax:SetShown(not locked and not leftPage)
+		local bidragPage = page == 12
+		f.tax:SetShown(not locked and not leftPage and not bidragPage)
 		SetShown(f.left, leftPage)
-		for _, t in ipairs(f.sideTabs) do SetShown(t, leaderMode and not locked) end
-		f.sideTabs[1]:SetChecked(not leftPage)
-		f.sideTabs[2]:SetChecked(leftPage)
+		SetShown(f.bidrag, bidragPage)
+		SetShown(f.sideTabs[1], true)
+		SetShown(f.sideTabs[2], true)
+		SetShown(f.sideTabs[3], leaderMode and not locked)
+		f.sideTabs[1]:SetChecked(not leftPage and not bidragPage)
+		f.sideTabs[2]:SetChecked(bidragPage)
+		f.sideTabs[3]:SetChecked(leftPage)
 	elseif w.id == "yrken" then
 		SetShown(f.professions, not locked and page == 2)
 		SetShown(f.orders, not locked and page == 8)
@@ -503,6 +527,8 @@ local function Layout(w)
 	elseif w.id == "nytt" then
 		f.sideTabs[1]:SetChecked(page ~= 10)
 		f.sideTabs[2]:SetChecked(page == 10)
+	elseif w.id == "folk" then
+		SetShown(f.folk, page == 11)
 	end
 end
 
@@ -657,7 +683,7 @@ function ns.RefreshWindow(id)
 			if f.bank then f.bank:SetText(w.open and BankText() or "") end
 			if w.open then
 				if wid == "skatt" then
-					if w.page == 9 then ns.RefreshLeavers() else RefreshTax() end
+					if w.page == 9 then ns.RefreshLeavers() elseif w.page == 12 then ns.RefreshBidrag() else RefreshTax() end
 				elseif wid == "yrken" then
 					if w.page == 8 then ns.RefreshOrders() else ns.RefreshRegistry() end
 				elseif wid == "swedbank" and SwedbankPanel then SwedbankPanel.Refresh()
@@ -665,6 +691,8 @@ function ns.RefreshWindow(id)
 				elseif wid == "options" then
 					if w.page == 3 then ns.RefreshMine() else ns.RefreshOptions() end
 				elseif wid == "prestationer" then ns.RefreshAchievements()
+				elseif wid == "folk" then ns.RefreshFolk()
+				elseif wid == "kontakt" then ns.RefreshContact()
 				end
 			end
 		end
@@ -701,7 +729,7 @@ function ns.ToggleWindow(n)
 end
 
 -- For the Swedbank addon and Bokföring (Zach 8/11, 9/11).
-local PAGES = { tax = 1, professions = 2, swedbank = 6, news = 4, options = 5, achievements = 7, orders = 8, versions = 10 }
+local PAGES = { tax = 1, professions = 2, swedbank = 6, news = 4, options = 5, achievements = 7, orders = 8, versions = 10, folk = 11, bidrag = 12, contact = 13 }
 SkatteverketAPI = {
 	-- Open a window on that page, or close it if it is already showing.
 	Toggle = function(page) ns.ToggleWindow(PAGES[page] or 1) end,

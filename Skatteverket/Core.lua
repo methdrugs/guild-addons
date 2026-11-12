@@ -31,7 +31,8 @@
 --   M;paid;last deposit   leader -> member: restore a lost record
 -- Registration (Y, Z, G, N) is described in Professions.lua, recipe search
 -- (W, J, U) in Recipes.lua, achievements (H, I) in Achievements.lua,
--- arbetsordrar (O, D, X) in Orders.lua.
+-- arbetsordrar (O, D, X) in Orders.lua, Folkvald representant and Kontakta oss!
+-- (F and a second letter) in Folk.lua.
 --
 -- Saved data survives new versions as long as the folder and the names
 -- SkatteverketDB and SkatteverketCharDB never change. When the shape of
@@ -40,7 +41,15 @@
 local _, ns = ...
 
 ns.GUILD = "THÖNDERSTÖRM"
-ns.VERSION = "0.33"
+ns.VERSION = "0.34"
+-- The parts inside Skatteverket with their own number (Zach 12/11), raised
+-- only when that part changes; shown under THÖNDERSTÖRM in Nytt. The
+-- release's notes name it: "Yrken 0.4: ...".
+ns.PARTS = {
+	{ name = "Yrken", version = "0.4" },
+	{ name = "Arbetsorder", version = "0.4" },
+	{ name = "Folkvald representant", version = "0.4" },
+}
 -- Whether this build is out in WowUp (Zach 11/11): `wowaddons publish`
 -- sets it true in what it pushes and in his installed copy; a plain
 -- `wowaddons` install keeps it false, so the leader's test builds raise no
@@ -916,6 +925,11 @@ OnWhisper = function(sender, msg)
 		elseif kind == "G" then ns.OnRegister(sender)
 		end
 	end
+	-- Folkvald representant, Socialbidrag and Kontakta oss! (Folk.lua).
+	if kind and #kind == 2 and kind:sub(1, 1) == "F" then
+		ns.OnFolk(sender, parts, true)
+		return
+	end
 	-- Arbetsordrar, between any two members (Orders.lua).
 	if kind == "O" then ns.OnOrder(sender, parts)
 	elseif kind == "D" then ns.OnOrderState(sender, parts)
@@ -940,7 +954,9 @@ local function OnAddonMessage(prefix, msg, channel, sender)
 	local parts = { strsplit(";", msg) }
 	local kind = parts[1]
 	local fromLeader = sender == ns.Leader()
-	if kind == "T" then
+	if kind and #kind == 2 and kind:sub(1, 1) == "F" then
+		ns.OnFolk(sender, parts, false)
+	elseif kind == "T" then
 		OnPublic(sender, parts)
 	elseif kind == "S" then
 		-- A member still on 0.4 or older; it sends amounts openly.

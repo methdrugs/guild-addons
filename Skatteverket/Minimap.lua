@@ -93,6 +93,10 @@ function ns.Todo()
 	-- Who left while he was away (Zach 10/11).
 	for _, t in ipairs(ns.LeaverTodo and ns.LeaverTodo() or {}) do table.insert(out, t) end
 	for _, t in ipairs(ns.OrderNotices and ns.OrderNotices() or {}) do table.insert(out, t) end
+	-- Folkvald representant and Kontakta oss! (Zach 11/11).
+	for _, list in ipairs({ ns.FolkTodo and ns.FolkTodo() or {}, ns.BidragTodo and ns.BidragTodo() or {}, ns.ContactTodo and ns.ContactTodo() or {} }) do
+		for _, t in ipairs(list) do table.insert(out, t) end
+	end
 	local orders = ns.OrdersToDo and ns.OrdersToDo() or 0
 	if orders > 0 then
 		table.insert(out, { text = string.format("%d arbetsorder%s väntar på dig", orders, orders == 1 and "" or "ar"), click = function() ns.ShowTab(8) end })
@@ -188,6 +192,8 @@ function ns.AddonMenu(owner)
 			if root.CreateDivider then root:CreateDivider() end
 		end
 		root:CreateTitle("THÖNDERSTÖRM")
+		-- Right under the title (Zach 12/11): who leads, and contact them.
+		root:CreateButton("Folkvald representant", function() ns.ShowTab(11) end)
 		root:CreateButton("Skatt", function() ns.ShowTab(1) end)
 		root:CreateButton("Yrken", function() ns.ShowTab(2) end)
 		root:CreateButton("Swedbank", function() ns.ShowTab(6) end)
@@ -195,6 +201,7 @@ function ns.AddonMenu(owner)
 		-- Not addons of their own: below a line (Zach 9/11).
 		if root.CreateDivider then root:CreateDivider() end
 		root:CreateButton("Nytt", function() ns.ShowTab(4) end)
+		root:CreateButton("Kontakta oss!", function() ns.ShowTab(13) end)
 		root:CreateButton("Inställningar", function() ns.ShowTab(5) end)
 	end)
 	-- Open to the left of the button, not over the minimap (Zach 9/11).

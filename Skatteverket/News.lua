@@ -12,6 +12,19 @@ local _, ns = ...
 -- enough, "restart" when the release adds files the game only reads at
 -- start; shown in red under the version.
 ns.NOTES = {
+	{ "0.34", "2026-11-12", after = "restart", {
+		"Folkvald representant 0.4: guildets ledare, valda av medlemmarna (högerklicka blixten, överst under THÖNDERSTÖRM). Varje roll beskrivs med vad den innebär; titeln är ett exempel och du får föreslå en bättre. Sök med en motivering på högst 200 tecken, en ansökan åt gången. Har någon redan rollen kan du utmana; godtar guildledaren utmaningen röstar guildet i 3 dagar.",
+		"Folkvald representant 0.4: Kontakta mig! på varje rad öppnar ett ärende i Kontakta oss! till den som har rollen och guildledaren (till guildledaren om rollen är vakant).",
+		"Folkvald representant: rösterna är hemliga, en röst per konto och roll. Guildledaren ser bara summan, aldrig vem som röstat på vem. Kandidaterna, deras motiveringar och resultatet är officiell information för alla medlemmar.",
+		"Statligt socialbidrag (fliken med väskan i Skatt, öppen för alla i guildet): under nivå 15 kan du få upp till 3 väskor med 6 platser, från nivå 15 upp till 3 väskor med 8 platser, per konto. De kommer med posten.",
+		"Kontakta oss! (högerklicka blixten): skicka en bugg, en förbättring, en idé till en helt ny addon eller något annat, för den tjänst det gäller. Det blir ett ärende med nummer som guildledaren och den som har rollen för tjänsten läser (Swedbank – VD för Swedbank och så vidare). Ni skriver fram och tillbaka i ärendet, och du, rollen eller guildledaren kan stänga det och öppna det igen. Mina ärenden visar ärenden från alla dina karaktärer; byter rollen ägare följer de öppna ärendena och de som stängts senaste 30 dagarna med.",
+		"Nytt: varje version heter THÖNDERSTÖRM, med Skatteverket, Yrken, Arbetsorder, Folkvald representant, Swedbank och Bokföring och deras egna versioner under. Överst står vilka versioner du kör.",
+		"Arbetsorder 0.4: under reagenserna i någons receptfönster, och när du beställer, står vad materialet kostar att köpa och skicka (porto 30c per hög). Bocka i Använd mina material så räknas det du redan har i väskorna bort. Råvaror räknas när hantverkaren levlar på dem, inte när yrket är på 300.",
+		"Folkvald representant: alla söker, även den som har en roll i dag. En roll som ingen söker blir vakant när ansökan stänger.",
+		"Arbetsorder: rutan Visa avslutade går att bocka i igen.",
+		"Folkvald representant: du har din roll tills du avgår (knappen Avgå på din rad) eller förlorar en utmaning. Avgår någon får guildet veta det och platsen kan sökas.",
+		"Yrken 0.4: sökrutan heter Sök i alla yrken och hittar också recept som använder det du söker som reagens, markerade (reagens).",
+	} },
 	{ "0.33", "2026-11-11", after = "reload", {
 		"/skatt version visar vilka versioner du kör, och om någon i guildet har en nyare och vem.",
 		"Arbetsorder: accepterar du en order där du löser materialet gör Bokföring en inköpslista i Auctionator med det som inte redan finns i dina väskor, och ordern syns under Making now tills den är klar. Köpen räknas som Arbetsordrar i Bokförings historik.",
@@ -137,7 +150,7 @@ local page
 -- A line that starts with a panel's name ("Bokföring 0.6: ...",
 -- "Arbetsorder: ...") goes under that panel, the version in its heading;
 -- other lines are Skatteverket's own.
-local PANELS = { "Skatteverket", "Yrken", "Arbetsorder", "Swedbank", "Bokföring" }
+local PANELS = { "Skatteverket", "Yrken", "Arbetsorder", "Folkvald representant", "Swedbank", "Bokföring" }
 local PANEL_COLOUR = "|cff80c0ff"
 
 local function Grouped(lines)
@@ -173,35 +186,56 @@ local function Grouped(lines)
 	return out
 end
 
+-- One release of the pack per Skatteverket version, headed THÖNDERSTÖRM
+-- (Zach 12/11). A Swedbank version goes under the first release on or
+-- after its date, the pack being what ships; its lines read "Swedbank
+-- 0.12: ...", so it gets its heading with the version.
 local function Notes()
-	-- Both lists are newest first; merge by date, Skatteverket first on the same day.
-	local all = {}
-	for i, v in ipairs(ns.NOTES) do table.insert(all, { "Skatteverket", v, 0, i }) end
-	for i, v in ipairs(SwedbankPanel and SwedbankPanel.NOTES or {}) do table.insert(all, { "Swedbank", v, 1, i }) end
-	table.sort(all, function(a, b)
-		if a[2][2] ~= b[2][2] then return a[2][2] > b[2][2] end
-		if a[3] ~= b[3] then return a[3] < b[3] end
-		return a[4] < b[4]
-	end)
+	local releases = {}
+	for i = #ns.NOTES, 1, -1 do
+		local v = ns.NOTES[i]
+		table.insert(releases, 1, { version = v[1], date = v[2], after = v.after, lines = { unpack(v[3]) } })
+	end
+	local swed = SwedbankPanel and SwedbankPanel.NOTES or {}
+	for i = #swed, 1, -1 do
+		local s = swed[i]
+		local home
+		for k = #releases, 1, -1 do
+			if releases[k].date >= s[2] then home = releases[k] break end
+		end
+		home = home or releases[1]
+		if home then
+			for _, line in ipairs(s[3]) do table.insert(home.lines, "Swedbank " .. s[1] .. ": " .. line) end
+			if s.after == "restart" or (s.after == "reload" and not home.after) then home.after = s.after end
+		end
+	end
 	local out = {}
-	for _, e in ipairs(all) do
-		local v = e[2]
-		table.insert(out, string.format("%s%s %s|r  %s%s|r", GOLD, e[1], v[1], GREY, v[2]))
+	for _, r in ipairs(releases) do
+		table.insert(out, string.format("%s%s %s|r  %s%s|r", GOLD, ns.GUILD, r.version, GREY, r.date))
 		-- What to do after updating, in red (Zach 10/11).
-		if v.after == "restart" then
+		if r.after == "restart" then
 			table.insert(out, RED .. "  EFTER UPPDATERINGEN: STARTA OM SPELET HELT (/reload räcker inte den här gången)|r")
-		elseif v.after == "reload" then
+		elseif r.after == "reload" then
 			table.insert(out, RED .. "  EFTER UPPDATERINGEN: SKRIV /reload|r")
 		end
-		local groups = e[1] == "Skatteverket" and Grouped(v[3]) or { { lines = v[3] } }
-		for _, g in ipairs(groups) do
-			-- A heading only when the version touches more than its own panel.
-			if g.head and (#groups > 1 or g.head ~= "Skatteverket") then table.insert(out, PANEL_COLOUR .. "  " .. g.head .. "|r") end
-			for _, line in ipairs(g.lines) do table.insert(out, WHITE .. (g.head and "    - " or "- ") .. line .. "|r") end
+		for _, g in ipairs(Grouped(r.lines)) do
+			local head = g.head == "Skatteverket" and ("Skatteverket " .. r.version) or g.head
+			table.insert(out, PANEL_COLOUR .. "  " .. head .. "|r")
+			for _, line in ipairs(g.lines) do table.insert(out, WHITE .. "    - " .. line .. "|r") end
 		end
 		table.insert(out, " ")
 	end
 	return table.concat(out, "\n")
+end
+
+-- What this client runs, every part with its number (Zach 12/11).
+local function Running()
+	local parts = { "Skatteverket " .. ns.VERSION }
+	for _, p in ipairs(ns.PARTS) do table.insert(parts, p.name .. " " .. p.version) end
+	table.insert(parts, "Swedbank " .. ns.SwedbankVersion())
+	local bok = ns.BokforingVersion and ns.BokforingVersion()
+	if bok and bok ~= "" and bok ~= "-" then table.insert(parts, "Bokföring " .. bok) end
+	return string.format("%sDu kör %s %s:|r %s%s|r\n \n", GOLD, ns.GUILD, ns.VERSION, WHITE, table.concat(parts, ", "))
 end
 
 -- Everyone in the guild now, grouped by version, newest first; offline in
@@ -319,7 +353,7 @@ function ns.RefreshNews(n)
 		top = RED .. "Uppdatera:|r\n" .. WHITE .. "    " .. table.concat(behind, "\n    ") .. "|r\n"
 			.. GREY .. "Uppdatera guild-addons i WowUp och skriv /reload. Vad som är nytt står här efteråt.|r\n \n"
 	end
-	page.text:SetText(top .. Notes())
+	page.text:SetText(top .. Running() .. Notes())
 	page.child:SetHeight(page.text:GetStringHeight() + 8)
 end
 

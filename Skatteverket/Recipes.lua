@@ -383,10 +383,16 @@ ns.RecipeName = function(key) return Name(key) or "..." end
 -- make on the way { itemID, crafts, colour }; nil when nothing changes or
 -- something is still loading.
 local POINTS = { o = true, y = true, g = true }
+-- At 300 a profession gives no more points (Zach 12/11), whatever colour.
+local SKILL_MAX = 300
 function ns.RawPlan(crafter, key, count)
 	local makes = {}
-	for _, list in pairs(ns.db.recipes[crafter] or {}) do
-		for _, k in ipairs(list.keys or {}) do
+	local member = ns.db.members[crafter]
+	local levels = member and ns.DecodeProfessions(member.profs) or {}
+	if crafter == ns.Me() then levels = ns.ReadProfessions() end
+	for code, list in pairs(ns.db.recipes[crafter] or {}) do
+		local done = levels[code] and levels[code].rank >= SKILL_MAX
+		for _, k in ipairs(done and {} or list.keys or {}) do
 			local _, _, colour = Parse(k)
 			if k:sub(1, 1) ~= "#" and POINTS[colour] then
 				local d = Data(k)
@@ -416,7 +422,9 @@ function ns.RawPlan(crafter, key, count)
 end
 
 -- { recipe, name, code } for every recipe whose name contains text, in
--- members who are in the guild now; recipe name first, then member.
+-- members who are in the guild now; recipe name first, then member. A
+-- recipe that uses a reagent by that name is found too, with uses set to
+-- the reagent (Zach 12/11).
 function ns.SearchRecipes(text)
 	local results, roster, online = {}, ns.RosterNames(), {}
 	for i = 1, GetNumGuildMembers() do
@@ -431,12 +439,23 @@ function ns.SearchRecipes(text)
 					local recipe = Name(key)
 					if recipe and recipe:lower():find(text, 1, true) then
 						table.insert(results, { recipe = recipe, name = name, code = code, online = online[name], key = key })
+					elseif recipe then
+						local d = Data(key)
+						for _, r in ipairs(d and d.reagents or {}) do
+							local reagent = ItemName(r.itemID)
+							if reagent and reagent:lower():find(text, 1, true) then
+								table.insert(results, { recipe = recipe, name = name, code = code, online = online[name], key = key, uses = reagent })
+								break
+							end
+						end
 					end
 				end
 			end
 		end
 	end
 	table.sort(results, function(a, b)
+		-- What was searched for first, then what uses it.
+		if (a.uses == nil) ~= (b.uses == nil) then return a.uses == nil end
 		if a.recipe ~= b.recipe then return a.recipe < b.recipe end
 		return a.name < b.name
 	end)

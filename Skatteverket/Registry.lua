@@ -155,7 +155,7 @@ function ns.BuildRegistry(parent)
 	page.search:SetSize(150, 20)
 	page.search:SetPoint("LEFT", page.pick, "RIGHT", 12, 0)
 	page.search:SetAutoFocus(false)
-	if page.search.Instructions then page.search.Instructions:SetText("Sök recept") end
+	if page.search.Instructions then page.search.Instructions:SetText("Sök i alla yrken") end
 	page.search:HookScript("OnEscapePressed", function(self) self:ClearFocus() end)
 	page.search:HookScript("OnEnterPressed", function(self) self:ClearFocus() end)
 	page.search:HookScript("OnTextChanged", function(self)
@@ -165,7 +165,8 @@ function ns.BuildRegistry(parent)
 	end)
 	page.search:HookScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-		GameTooltip:AddLine("Sök recept i hela guildet")
+		GameTooltip:AddLine("Sök i alla yrken i hela guildet")
+		GameTooltip:AddLine("Recept och föremål, och recept som använder det du söker som reagens.", 1, 1, 1, true)
 		GameTooltip:Show()
 	end)
 	page.search:HookScript("OnLeave", function() GameTooltip:Hide() end)
@@ -263,7 +264,8 @@ function ns.RefreshRegistry()
 				local p = ns.PROFESSION_BY_CODE[hit.code]
 				-- Offline in grey (Zach 7/11): send mail instead of a whisper.
 				local who = hit.online and hit.name or ("|cff808080" .. hit.name .. " (offline)|r")
-				local values = { hit.recipe, who, p and p.label or hit.code }
+				local recipe = hit.uses and (hit.recipe .. " |cff999999(reagens)|r") or hit.recipe
+				local values = { recipe, who, p and p.label or hit.code }
 				for c, fs in ipairs(row.found) do fs:SetText(values[c]) end
 				row.whisper = hit.online and hit.name or nil
 				row.key, row.link = hit.key, ns.RecipeLink(hit.key)

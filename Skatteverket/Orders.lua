@@ -160,19 +160,62 @@ end
 
 -- Ordering --------------------------------------------------------------
 
--- What the reagents of count crafts cost on the auction house, from
--- Auctionator's prices where it is installed; nil when unknown.
+-- What one costs to buy: Bokföring's price (vendor or Auctionator, the
+-- lower), else Auctionator's alone; nil when unknown.
+local function Price(item)
+	if BokforingAPI and BokforingAPI.Price then return BokforingAPI.Price(item) end
+	local api = Auctionator and Auctionator.API and Auctionator.API.v1
+	if not (api and api.GetAuctionPriceByItemID) then return end
+	local ok, price = pcall(api.GetAuctionPriceByItemID, "Skatteverket", item)
+	return ok and price or nil
+end
+
+local POSTAGE = 30
+local function StackSize(item)
+	local size = C_Item and C_Item.GetItemMaxStackSizeByID and C_Item.GetItemMaxStackSizeByID(item)
+	if not size and GetItemInfo then size = select(8, GetItemInfo(item)) end
+	return (size and size > 0) and size or 20
+end
+
+-- What buying and sending materials costs (Zach 12/11), for a list of
+-- { itemID, count }: the price of what must be bought, postage of 30
+-- copper for each stack in the letter, and the names of items without a
+-- price. own: what is already in your bags is not bought (still sent).
+function ns.MaterialCost(list, own)
+	local buy, stacks, missing = 0, 0, {}
+	for _, r in ipairs(list) do
+		local need = r.count
+		if own then
+			local have = (C_Item and C_Item.GetItemCount and C_Item.GetItemCount(r.itemID)) or (GetItemCount and GetItemCount(r.itemID)) or 0
+			need = math.max(0, need - have)
+		end
+		stacks = stacks + math.ceil(r.count / StackSize(r.itemID))
+		if need > 0 then
+			local p = Price(r.itemID)
+			if p then buy = buy + p * need else table.insert(missing, ns.ItemName(r.itemID) or "...") end
+		end
+	end
+	return buy, stacks * POSTAGE, missing
+end
+
+-- The line shown for it: "Material 1g 20s + porto 60c = 1g 20s 60c", with
+-- "minst" and what has no price when something is missing.
+function ns.CostText(list, own)
+	local buy, postage, missing = ns.MaterialCost(list, own)
+	local text = string.format("Material %s + porto %s = %s%s", ns.Money(buy), ns.Money(postage), #missing > 0 and "minst " or "", ns.Money(buy + postage))
+	if #missing > 0 then text = text .. "|cffff5050, pris saknas för " .. table.concat(missing, ", ") .. "|r" end
+	return text
+end
+
+-- What the reagents of count crafts cost, for the tip; nil when a price
+-- is missing.
 local function ReagentCost(key, count)
 	local d = ns.RecipeData and ns.RecipeData(key)
-	local api = Auctionator and Auctionator.API and Auctionator.API.v1
-	if not d or not d.reagents or #d.reagents == 0 or not (api and api.GetAuctionPriceByItemID) then return end
-	local total = 0
-	for _, r in ipairs(d.reagents) do
-		local ok, price = pcall(api.GetAuctionPriceByItemID, "Skatteverket", r.itemID)
-		if not ok or not price then return end
-		total = total + price * r.count * count
-	end
-	return total
+	if not d or not d.reagents or #d.reagents == 0 then return end
+	local list = {}
+	for _, r in ipairs(d.reagents) do table.insert(list, { itemID = r.itemID, count = r.count * count }) end
+	local buy, _, missing = ns.MaterialCost(list)
+	if #missing == 0 then return buy end
 end
 
 function ns.PlaceOrder(to, key, count, mats, days, note, raw, steps, deliver)
@@ -373,12 +416,34 @@ end
 -- Skicka råvaror (Zach 10/11): offered when the crafter levels on making
 -- a reagent, ticked from the start; the line says what changes and why.
 local COLOUR_WORD = { o = "orange", y = "gul", g = "grön" }
+
+-- What the materials cost to buy and send (Zach 12/11), for the count
+-- typed, raw materials when those are ticked; with "Använd mina material"
+-- what is in your bags is not bought. Not when the crafter buys them: the
+-- tip line says that.
+local function UpdateCost()
+	local sending = dialog.mats ~= "h"
+	dialog.ownBox:SetShown(sending)
+	dialog.cost:SetShown(sending)
+	if not sending then return end
+	local count = math.max(tonumber(dialog.count:GetText()) or 1, 1)
+	local list = {}
+	if dialog.mats == "e" and dialog.raw and dialog.rawBox:GetChecked() then
+		for _, r in ipairs(dialog.raw) do table.insert(list, { itemID = r.itemID, count = r.count }) end
+	else
+		local d = ns.RecipeData and ns.RecipeData(dialog.key)
+		for _, r in ipairs(d and d.reagents or {}) do table.insert(list, { itemID = r.itemID, count = r.count * count }) end
+	end
+	dialog.cost:SetText(#list > 0 and ns.CostText(list, dialog.ownBox:GetChecked()) or "")
+end
+
 local function UpdateRaw()
 	local count = math.max(tonumber(dialog.count:GetText()) or 1, 1)
 	local raw, steps
 	if dialog.mats == "e" and ns.RawPlan then raw, steps = ns.RawPlan(dialog.to, dialog.key, count) end
 	dialog.raw, dialog.steps = raw, steps
 	dialog.rawBox:SetShown(raw ~= nil)
+	UpdateCost()
 	if not raw then return end
 	local send, made = {}, {}
 	for _, r in ipairs(raw) do table.insert(send, string.format("%d %s", r.count, ns.ItemName(r.itemID) or "...")) end
@@ -419,7 +484,7 @@ local function BuildDialog()
 		dialog:SetBackdrop({ bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background", edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
 			tile = true, tileSize = 32, edgeSize = 32, insets = { left = 11, right = 12, top = 12, bottom = 11 } })
 	end
-	dialog:SetSize(380, 420)
+	dialog:SetSize(380, 470)
 	dialog:SetPoint("CENTER")
 	dialog:SetFrameStrata("DIALOG")
 	dialog:SetToplevel(true)
@@ -467,14 +532,28 @@ local function BuildDialog()
 	dialog.rawBox.text:SetPoint("TOPLEFT", dialog.rawBox, "TOPRIGHT", 2, -5)
 	dialog.rawBox.text:SetWidth(200)
 	dialog.rawBox.text:SetJustifyH("LEFT")
+	dialog.rawBox:SetScript("OnClick", UpdateCost)
+
+	-- Zach 12/11: a box to count what is already in your bags as yours.
+	dialog.ownBox = CreateFrame("CheckButton", nil, dialog, "UICheckButtonTemplate")
+	dialog.ownBox:SetSize(24, 24)
+	dialog.ownBox:SetPoint("TOPLEFT", 132, -220)
+	dialog.ownBox.text = dialog.ownBox:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	dialog.ownBox.text:SetPoint("LEFT", dialog.ownBox, "RIGHT", 2, 0)
+	dialog.ownBox.text:SetText("Använd mina material")
+	dialog.ownBox:SetScript("OnClick", UpdateCost)
+	dialog.cost = dialog:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	dialog.cost:SetPoint("TOPLEFT", 162, -248)
+	dialog.cost:SetWidth(200)
+	dialog.cost:SetJustifyH("LEFT")
 
 	-- How long the one ordering can wait (Zach 9/11).
-	Label(dialog, "Jag kan vänta", 24, -242)
+	Label(dialog, "Jag kan vänta", 24, -292)
 	dialog.waits = {}
 	for k, days in ipairs(WAITS) do
 		local b = CreateFrame("Button", nil, dialog, "UIPanelButtonTemplate")
 		b:SetSize(52, 22)
-		b:SetPoint("TOPLEFT", 136 + (k - 1) * 56, -238)
+		b:SetPoint("TOPLEFT", 136 + (k - 1) * 56, -288)
 		b:SetText(days == 1 and "1 dag" or (days .. " dgr"))
 		b:SetScript("OnClick", function()
 			dialog.days = days
@@ -485,19 +564,19 @@ local function BuildDialog()
 		dialog.waits[k] = b
 	end
 
-	Label(dialog, "Anteckning", 24, -278)
+	Label(dialog, "Anteckning", 24, -328)
 	dialog.note = CreateFrame("EditBox", nil, dialog, "InputBoxTemplate")
 	dialog.note:SetSize(214, 20)
-	dialog.note:SetPoint("TOPLEFT", 140, -274)
+	dialog.note:SetPoint("TOPLEFT", 140, -324)
 	dialog.note:SetAutoFocus(false)
 	dialog.note:SetMaxLetters(80)
 
 	-- The guild leader only (Zach 11/11): someone else gets the finished
 	-- crafts, so he is not the middleman. A first name is enough.
-	dialog.deliverLabel = Label(dialog, "Skicka till", 24, -310)
+	dialog.deliverLabel = Label(dialog, "Skicka till", 24, -360)
 	dialog.deliver = CreateFrame("EditBox", nil, dialog, "InputBoxTemplate")
 	dialog.deliver:SetSize(150, 20)
-	dialog.deliver:SetPoint("TOPLEFT", 140, -306)
+	dialog.deliver:SetPoint("TOPLEFT", 140, -356)
 	dialog.deliver:SetAutoFocus(false)
 	dialog.deliver:SetMaxLetters(40)
 	dialog.deliverHint = dialog:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
@@ -550,6 +629,7 @@ function ns.OrderDialog(to, key)
 	dialog.theirs:SetChecked(false)
 	dialog.tip:SetText(TipText())
 	dialog.rawBox:SetChecked(true)
+	dialog.ownBox:SetChecked(false)
 	UpdateRaw()
 	dialog.note:SetText("")
 	dialog.deliver:SetText("")
@@ -1134,6 +1214,10 @@ local function Decline(owner, o)
 end
 ns.DeclineOrder = Decline
 
+-- Visa avslutade, declared before the page so its box sets this, not a
+-- global (Zach 12/11: the box would not tick).
+local showClosed = false
+
 function ns.BuildOrders(parent)
 	page = parent
 	local title = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -1235,7 +1319,6 @@ end
 
 -- Closed (Zach 11/11): declined, cancelled, run out, or Klar for a day;
 -- shown only with Visa avslutade. A notice not yet opened stays.
-local showClosed = false
 local function Closed(o)
 	local state = State(o)
 	if OPEN[state] or Unnoticed(o) then return false end

@@ -397,6 +397,9 @@ local function Build()
 	-- Inside the details at the bottom: the buttons take the whole width.
 	frame.note = Text(detail, "GameFontDisableSmall", "BOTTOMLEFT", 10, 6)
 	frame.note:SetWidth(W - 40)
+	-- What one craft's materials cost to buy and send to them (Zach 12/11).
+	frame.cost = Text(detail, "GameFontHighlightSmall", "BOTTOMLEFT", 10, 22)
+	frame.cost:SetWidth(W - 40)
 
 	frame:SetScript("OnUpdate", function(self, elapsed)
 		-- Item names and icons load in the background; show them as they come.
@@ -529,6 +532,14 @@ function ns.RefreshRecipeWindow(quiet)
 			b:Hide()
 		end
 	end
+	-- One craft, as raw materials when they level on making the reagents.
+	local costList = {}
+	if hasRecipe and d and who ~= ns.Me() then
+		local raw = ns.RawPlan(who, selected.key, 1)
+		for _, r in ipairs(raw or d.reagents) do table.insert(costList, { itemID = r.itemID, count = r.count }) end
+		frame.cost:SetText((raw and "Råvaror för 1: " or "För 1: ") .. ns.CostText(costList))
+	end
+	frame.cost:SetShown(#costList > 0)
 	-- Citizens only, both ends (Zach 9/11).
 	frame.order:SetShown(not ns.Locked())
 	frame.bpp:SetShown(CanBPP() and who ~= ns.Me())
