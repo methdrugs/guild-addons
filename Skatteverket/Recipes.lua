@@ -20,6 +20,12 @@
 -- A list goes out when it changes, at most every ten minutes since colours
 -- change with every skill point, and again at login when older than three
 -- days; the leader relays to members who log in what they missed.
+-- Yrken turned off under Delar (Zach 14/11): nothing is read or shared,
+-- and each list goes out once more empty (W with no keys, newer stamp),
+-- so others and the leader's relay drop it and the recipe search no longer
+-- finds this member; one message per profession, sent again at login
+-- until it went out with the leader online. Turned on again, every list
+-- goes out with a newer stamp. Lists from others are still kept.
 
 local _, ns = ...
 
@@ -198,7 +204,7 @@ local scheduled = {}
 local function SendOwn(code)
 	scheduled[code] = nil
 	local mine = ns.char.recipes[code]
-	if not mine or not ns.InOurGuild() then return end
+	if not mine or not ns.InOurGuild() or not ns.YrkenOn() then return end
 	local parts = Parts(mine.keys)
 	for i, part in ipairs(parts) do
 		Queue(string.format("W;%s;%d;%d;%d;%s", code, i, #parts, mine.at, part))
@@ -213,6 +219,7 @@ end
 -- After the window has been open a moment, so the list has loaded.
 local readAt = 0
 local function ReadOpenWindow(craft)
+	if not ns.YrkenOn() then return end
 	readAt = GetTime() + 1
 	C_Timer.After(1.1, function()
 		if GetTime() < readAt then return end
@@ -240,6 +247,38 @@ local function ReadOpenWindow(craft)
 		end
 		if ns.RefreshWindow then ns.RefreshWindow() end
 	end)
+end
+
+-- Delar: Yrken off, every shared list goes out empty; the own lists stay
+-- in char.recipes for when it is turned on again.
+local function SendEmpty()
+	local parts = ns.char.parts
+	if not parts or not parts.dropAt or not ns.InOurGuild() then return end
+	for code in pairs(ns.char.recipes) do
+		Queue(string.format("W;%s;1;1;%d;", code, parts.dropAt))
+		if ns.Me() then Store(ns.Me(), code, parts.dropAt, {}) end
+	end
+	local _, leaderOnline = ns.Leader()
+	parts.dropSent = (leaderOnline or IsGuildLeader()) and true or nil
+end
+
+function ns.DropRecipes()
+	local parts = ns.char.parts
+	parts.dropAt = ns.Now()
+	parts.dropSent = nil
+	SendEmpty()
+end
+
+function ns.ShareRecipesAgain()
+	local parts = ns.char.parts or {}
+	local at = math.max(ns.Now(), (parts.dropAt or 0) + 1)
+	parts.dropAt, parts.dropSent = nil, nil
+	for code, mine in pairs(ns.char.recipes) do
+		mine.at = at
+		if ns.Me() then Store(ns.Me(), code, at, mine.keys) end
+		SendOwn(code)
+	end
+	if ns.InOurGuild() and not IsGuildLeader() then ns.Send("J;" .. (ns.db.recipesSeen or 0)) end
 end
 
 -- Parts waiting for the rest of their list.
@@ -385,16 +424,31 @@ ns.RecipeName = function(key) return Name(key) or "..." end
 local POINTS = { o = true, y = true, g = true }
 -- At 300 a profession gives no more points (Zach 12/11), whatever colour.
 local SKILL_MAX = 300
+
+-- A member's profession levels: this character's own from the game, anyone
+-- else's from their last shared profile.
+local function Levels(name)
+	if name == ns.Me() then return ns.ReadProfessions() end
+	local member = ns.db.members[name]
+	return member and ns.DecodeProfessions(member.profs) or {}
+end
+
+-- The colour rule shared by raw materials and the guild search (Zach
+-- 12/11): a recipe gives its owner a skill point when it is orange, yellow
+-- or green on their own shared list and the profession is under 300.
+-- levels is what Levels() gives for that member.
+local function GivesPoints(colour, levels, code)
+	if not POINTS[colour] then return false end
+	return not (levels[code] and levels[code].rank >= SKILL_MAX)
+end
+
 function ns.RawPlan(crafter, key, count)
 	local makes = {}
-	local member = ns.db.members[crafter]
-	local levels = member and ns.DecodeProfessions(member.profs) or {}
-	if crafter == ns.Me() then levels = ns.ReadProfessions() end
+	local levels = Levels(crafter)
 	for code, list in pairs(ns.db.recipes[crafter] or {}) do
-		local done = levels[code] and levels[code].rank >= SKILL_MAX
-		for _, k in ipairs(done and {} or list.keys or {}) do
+		for _, k in ipairs(list.keys or {}) do
 			local _, _, colour = Parse(k)
-			if k:sub(1, 1) ~= "#" and POINTS[colour] then
+			if k:sub(1, 1) ~= "#" and GivesPoints(colour, levels, code) then
 				local d = Data(k)
 				if d and d.item and #d.reagents > 0 then makes[d.item] = { key = k, colour = colour, d = d } end
 			end
@@ -424,7 +478,9 @@ end
 -- { recipe, name, code } for every recipe whose name contains text, in
 -- members who are in the guild now; recipe name first, then member. A
 -- recipe that uses a reagent by that name is found too, with uses set to
--- the reagent (Zach 12/11).
+-- the reagent (Zach 12/11). When two or more members make the same recipe,
+-- those it still gives a skill point (GivesPoints) come first with points
+-- set, so the order helps them level (Zach 12/11).
 function ns.SearchRecipes(text)
 	local results, roster, online = {}, ns.RosterNames(), {}
 	for i = 1, GetNumGuildMembers() do
@@ -453,10 +509,26 @@ function ns.SearchRecipes(text)
 			end
 		end
 	end
+	-- Who still levels on it, only where there is a choice of crafter. The
+	-- same recipe has the same key without the colour letter.
+	local crafters, levels = {}, {}
+	for _, r in ipairs(results) do
+		r.base = r.key:match("^%a%d+")
+		crafters[r.base] = (crafters[r.base] or 0) + 1
+	end
+	for _, r in ipairs(results) do
+		if crafters[r.base] > 1 then
+			levels[r.name] = levels[r.name] or Levels(r.name)
+			local _, _, colour = Parse(r.key)
+			r.points = GivesPoints(colour, levels[r.name], r.code) and colour or nil
+		end
+	end
 	table.sort(results, function(a, b)
 		-- What was searched for first, then what uses it.
 		if (a.uses == nil) ~= (b.uses == nil) then return a.uses == nil end
 		if a.recipe ~= b.recipe then return a.recipe < b.recipe end
+		if a.base ~= b.base then return a.base < b.base end
+		if (a.points == nil) ~= (b.points == nil) then return a.points ~= nil end
 		return a.name < b.name
 	end)
 	return results
@@ -575,6 +647,10 @@ events:SetScript("OnEvent", function(_, event)
 	if event == "PLAYER_LOGIN" then
 		C_Timer.After(40, function()
 			if not ns.InOurGuild() then return end
+			if not ns.YrkenOn() then
+				if not ns.char.parts.dropSent then SendEmpty() end
+				return
+			end
 			for code, mine in pairs(ns.char.recipes) do
 				if ns.Me() then Store(ns.Me(), code, mine.at, mine.keys) end
 				if not mine.sentAt or mine.sentAt < mine.at or ns.Now() - mine.sentAt > RESEND_DAYS * 86400 then SendOwn(code) end

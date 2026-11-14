@@ -25,10 +25,15 @@
 --   V;copper;server time[;reader]   the guild bank's balance, sent by whoever opened
 --                                   the bank; the leader adds who read it when relaying
 -- Whispers between a member and the leader, with amounts:
---   P;version;income total;paid;owed;last deposit;income since;rate stamp;debt since;good since
+--   P;version;income total;paid;owed;last deposit;income since;rate stamp;debt since;good since;
+--     debt age;good age;account;base;first seen;new account;sequence
+--                      base (0.34.1) is "income,paid,owed" as the leader last
+--                      confirmed them, blank before the first answer
 --   A;id;op;amount     leader -> member: F forgives the debt, C gives credit
 --   K;id               member -> leader: adjustment applied
---   M;paid;last deposit   leader -> member: restore a lost record
+--   M;paid;last deposit   leader -> member: restore a lost record (0.34 and older)
+--   M;paid;last deposit;income total;owed;account;restored;sequence   leader ->
+--                      member (0.34.1): the leader's totals, answering every P
 -- Registration (Y, Z, G, N) is described in Professions.lua, recipe search
 -- (W, J, U) in Recipes.lua, achievements (H, I) in Achievements.lua,
 -- arbetsordrar (O, D, X) in Orders.lua, Folkvald representant and Kontakta oss!
@@ -41,21 +46,21 @@
 local _, ns = ...
 
 ns.GUILD = "THÖNDERSTÖRM"
-ns.VERSION = "0.34"
+ns.VERSION = "0.34.2"
 -- The parts inside Skatteverket with their own number (Zach 12/11), raised
 -- only when that part changes; shown under THÖNDERSTÖRM in Nytt. The
 -- release's notes name it: "Yrken 0.4: ...".
 ns.PARTS = {
-	{ name = "Yrken", version = "0.4" },
-	{ name = "Arbetsorder", version = "0.4" },
-	{ name = "Folkvald representant", version = "0.4" },
+	{ name = "Yrken", version = "0.5" },
+	{ name = "Arbetsorder", version = "0.5" },
+	{ name = "Folkvald representant", version = "0.5" },
 }
 -- Whether this build is out in WowUp (Zach 11/11): `wowaddons publish`
 -- sets it true in what it pushes and in his installed copy; a plain
 -- `wowaddons` install keeps it false, so the leader's test builds raise no
 -- update popup, and the published one does. Never true in the repo.
 ns.PUBLISHED = true
-ns.SCHEMA = 10
+ns.SCHEMA = 11
 ns.PREFIX = "SKATT"
 ns.GOOD_HOURS = 48
 ns.NEGATIVE_DAYS = 7
@@ -121,6 +126,16 @@ end
 
 function ns.InOurGuild()
 	return GetGuildInfo("player") == ns.GUILD
+end
+
+-- Delar (Zach 14/11): Yrken, with Arbetsorder, can be turned off under
+-- Inställningar, per character (char.parts.yrken == false); on unless so.
+function ns.YrkenOn()
+	return not (ns.char and ns.char.parts and ns.char.parts.yrken == false)
+end
+
+function ns.YrkenOffText()
+	return "Yrken och Arbetsorder är avstängda på den här karaktären. Slå på dem under Inställningar > Delar (/installningar)."
 end
 
 function ns.BankOpen()
@@ -319,7 +334,7 @@ function ns.Locked()
 	if not (char and char.reg) then return "unsigned" end
 	local citizen = ns.CitizenRankIndex()
 	local _, _, rankIndex = GetGuildInfo("player")
-	if citizen and rankIndex and rankIndex > citizen then return "waiting" end
+	if citizen and rankIndex and not ns.RankOk(rankIndex, citizen) then return "waiting" end
 	return nil
 end
 
@@ -329,7 +344,7 @@ function ns.IsCitizen(name)
 	local citizen = ns.CitizenRankIndex()
 	for i = 1, GetNumGuildMembers() do
 		local full, _, rankIndex = GetGuildRosterInfo(i)
-		if full and ns.Short(full) == name then return rankIndex == 0 or (citizen ~= nil and rankIndex <= citizen) end
+		if full and ns.Short(full) == name then return rankIndex == 0 or (citizen ~= nil and ns.RankOk(rankIndex, citizen)) end
 	end
 	return false
 end
@@ -403,11 +418,17 @@ local function SendPrivate()
 	if not leader then return end
 	local debtAge, goodAge = ns.AccountState()
 	local debtDate, goodDate = OldDates(debtAge, goodAge)
-	local msg = string.format("P;%s;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s", ns.VERSION,
-		math.floor(char.incomeTotal), math.floor(char.paid), math.floor(char.owed),
+	char.seq = (char.seq or 0) + 1
+	local sent = { i = math.floor(char.incomeTotal), p = math.floor(char.paid), o = math.floor(char.owed), n = char.seq }
+	local base = char.base and string.format("%d,%d,%d", char.base.i, char.base.p, char.base.o) or ""
+	local msg = string.format("P;%s;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s;%d;%s;%d", ns.VERSION,
+		sent.i, sent.p, sent.o,
 		char.lastDeposit or 0, math.floor(char.incomeSince), db.rateStamp, debtDate, goodDate,
-		math.floor(debtAge), math.floor(goodAge), db.account)
-	if ns.SendTo(leader, msg) then privateDirty = false end
+		math.floor(debtAge), math.floor(goodAge), db.account, base, char.firstSeen, db.accountFresh and "1" or "", sent.n)
+	if ns.SendTo(leader, msg) then
+		privateDirty = false
+		char.sent = sent
+	end
 end
 
 local function SendStatus()
@@ -885,6 +906,37 @@ local function OnBoard(parts)
 	ns.Changed()
 end
 
+-- The leader's totals (0.34.1), the answer to every P: his copy is the
+-- master. Whatever changed here since that P was sent stays on top, and
+-- the totals become the base the next P counts its changes from. So a
+-- character played on two computers, or set up again on a new one, is
+-- counted once (Zach 12/11, a member who changed computer).
+local function Synced(parts)
+	local paid, lastDeposit = tonumber(parts[2]), tonumber(parts[3])
+	local income, owed = tonumber(parts[4]), tonumber(parts[5])
+	if not (paid and income and owed) then return end
+	-- An answer to an earlier P than the last one sent: the next answer covers it.
+	if char.sent and tonumber(parts[8]) ~= char.sent.n then return end
+	local sent = char.sent or { i = math.floor(char.incomeTotal), p = math.floor(char.paid), o = math.floor(char.owed) }
+	local before = { char.incomeTotal, char.paid, char.owed }
+	char.incomeTotal = income + (char.incomeTotal - sent.i)
+	char.paid = paid + (char.paid - sent.p)
+	char.owed = owed + (char.owed - sent.o)
+	char.base, char.sent = { i = income, p = paid, o = owed }, nil
+	char.lastDeposit = math.max(char.lastDeposit or 0, lastDeposit or 0)
+	local account = parts[6]
+	if account and account ~= "" and account ~= db.account and db.accountFresh then
+		db.account = account
+	end
+	if account and account ~= "" then db.accountFresh = nil end
+	Reconcile()
+	local changed = math.abs(char.incomeTotal - before[1]) >= 1 or math.abs(char.paid - before[2]) >= 1
+		or math.abs(char.owed - before[3]) >= 1
+	if parts[7] == "1" and changed then Print("dina siffror är hämtade från guildledaren.") end
+	ns.UpdateSelf()
+	if changed then SendStatus() end
+end
+
 -- The leader's copy is bigger than ours: this character's record was lost.
 local function Restore(paid, lastDeposit)
 	if not paid or paid <= char.paid then return end
@@ -937,6 +989,7 @@ OnWhisper = function(sender, msg)
 	end
 	if sender == ns.Leader() then
 		if kind == "A" then ns.ApplyAdjustment(parts[2], parts[3], tonumber(parts[4]))
+		elseif kind == "M" and parts[4] then Synced(parts)
 		elseif kind == "M" then Restore(tonumber(parts[2]), tonumber(parts[3]))
 		elseif kind == "N" then ns.OnNumber(tonumber(parts[2]))
 		end
@@ -1055,6 +1108,16 @@ local function Migrate()
 	-- 0.15 keeps the guild bank's last known balance in db.bank, empty until
 	-- someone reads it, and every member's recipes in db.recipes and this
 	-- character's own in char.recipes (both made in Init).
+	-- 0.35 keeps the account's sent mail of the last 30 days in db.sent
+	-- (Zach 14/11), made on first use; nothing older changes.
+	-- 0.34.2 also keeps the account's main in db.main (set by the first
+	-- signed character that says main, Registry.lua), the account groups the
+	-- leader served in db.folk.links, and an application's title and reason
+	-- in char.folk.app; nothing older changes.
+	-- 0.34.2 also keeps Delar in char.parts (Zach 14/11: yrken = false when
+	-- Yrken is turned off, dropAt and dropSent for the empty lists sent
+	-- then) and the bags given in db.bidrag.log (Bidrag.lua), both made on
+	-- first use; nothing older changes.
 	db.schema, char.schema = ns.SCHEMA, ns.SCHEMA
 end
 
@@ -1069,7 +1132,10 @@ local function Init()
 	db.clock = db.clock or 0
 	db.chars = db.chars or {}
 	-- Which members share an account, for the leader only (Zach 10/11).
-	db.account = db.account or string.format("%x%04x", time(), math.random(0, 65535))
+	if not db.account then
+		db.account = string.format("%x%04x", time(), math.random(0, 65535))
+		db.accountFresh = true
+	end
 	SkatteverketCharDB = SkatteverketCharDB or {}
 	char = SkatteverketCharDB
 	char.incomeTotal = char.incomeTotal or 0
@@ -1180,6 +1246,12 @@ local LEADER_COMMANDS = { rate = true, forgive = true, credit = true, sync = tru
 SLASH_SKATTYRKEN1 = "/yrken"
 SlashCmdList.SKATTYRKEN = function() SlashCmdList.SKATTEVERKET("yrken") end
 
+-- /installningar opens Inställningar (Zach 12/11), as /skatt inställningar
+-- does; the ä spelling is a second name, untested in the client.
+SLASH_SKATTINSTALLNINGAR1 = "/installningar"
+SLASH_SKATTINSTALLNINGAR2 = "/inställningar"
+SlashCmdList.SKATTINSTALLNINGAR = function() SlashCmdList.SKATTEVERKET("inställningar") end
+
 SLASH_SKATTEVERKET1 = "/skatt"
 SlashCmdList.SKATTEVERKET = function(msg)
 	local cmd, rest = (msg or ""):match("^%s*(%S*)%s*(.-)%s*$")
@@ -1187,7 +1259,8 @@ SlashCmdList.SKATTEVERKET = function(msg)
 	-- Swedish words, with the English ones of earlier versions still working.
 	cmd = ({ betala = "pay", sats = "rate", ["efterskänk"] = "forgive", kredit = "credit", synka = "sync", lista = "list",
 		["anmälan"] = "register", anmalan = "register", yrken = "professions",
-		["hjälp"] = "help", hjalp = "help", nytt = "news", ["lämnat"] = "left", lamnat = "left" })[cmd] or cmd
+		["hjälp"] = "help", hjalp = "help", nytt = "news", ["lämnat"] = "left", lamnat = "left",
+		["inställningar"] = "options", installningar = "options" })[cmd] or cmd
 	if cmd == "" or cmd == "list" then
 		ns.ToggleWindow()
 	elseif cmd == "register" then
@@ -1196,6 +1269,8 @@ SlashCmdList.SKATTEVERKET = function(msg)
 		ns.ShowHelp()
 	elseif cmd == "news" then
 		ns.ToggleWindow(4)
+	elseif cmd == "options" then
+		ns.ShowTab(5)
 	elseif cmd == "left" then
 		-- Who left the guild, the last 30 days (Zach 10/11).
 		ns.ListLeavers()
@@ -1215,6 +1290,7 @@ SlashCmdList.SKATTEVERKET = function(msg)
 		ns.RecipeTest()
 	elseif cmd == "professions" then
 		if not ns.InOurGuild() then Print("den här karaktären är inte med i " .. ns.GUILD .. ".") return end
+		if not ns.YrkenOn() then Print(ns.YrkenOffText()) return end
 		ns.ToggleWindow(2)
 	elseif cmd == "info" then
 		local locked = ns.Locked()
@@ -1230,7 +1306,7 @@ SlashCmdList.SKATTEVERKET = function(msg)
 		if not IsGuildLeader() then Print("bara guildledaren kan göra det.") return end
 		ns.LeaderCommand(cmd, rest)
 	else
-		Print("/skatt öppnar fönstret, /skatt info visar din skatt, /skatt betala betalar vid guildbanken, /skatt anmälan visar din anmälan, /skatt yrken visar yrkesregistret, /skatt hjälp visar villkor och vanliga frågor, /skatt nytt visar vad som är nytt, /skatt version visar dina versioner, /skatt prestationer visar prestationer.")
+		Print("/skatt öppnar fönstret, /skatt info visar din skatt, /skatt betala betalar vid guildbanken, /skatt anmälan visar din anmälan, /skatt yrken visar yrkesregistret, /skatt hjälp visar villkor och vanliga frågor, /skatt nytt visar vad som är nytt, /installningar visar inställningar, /skatt version visar dina versioner, /skatt prestationer visar prestationer.")
 		Print("Guildledaren: /skatt sats 5, /skatt efterskänk Namn, /skatt kredit Namn 2g50s, /skatt synka.")
 	end
 end

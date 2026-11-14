@@ -65,8 +65,10 @@ local function ReturnMails()
 		local name
 		for _, p in ipairs(patterns) do name = name or (subject and subject:match(p)) end
 		if name and (itemCount or 0) > 0 then
-			local count = GetInboxItem and select(4, GetInboxItem(i, 1)) or 1
-			table.insert(out, { item = name, count = count or 1, money = 0, key = Seen(subject, count, name, daysLeft) })
+			local id, count
+			if GetInboxItem then id, count = select(2, GetInboxItem(i, 1)), select(4, GetInboxItem(i, 1)) end
+			-- The item number too, for stock at cost (0.7).
+			table.insert(out, { item = name, id = type(id) == "number" and id or nil, count = count or 1, money = 0, key = Seen(subject, count, name, daysLeft) })
 		end
 	end
 	return out
@@ -78,8 +80,10 @@ end
 -- since each such batch was taken for one sale), so the inbox's count of
 -- each kind is kept: more than before is new; fewer within one visit is
 -- mail taken, which makes room for the next ones that look the same.
+-- noted: called for each mail counted for the first time (stock at cost,
+-- 0.7: a sale takes the item out at cost, an expiry adds the lost deposit).
 local visit = {}
-local function Note(mails, store, counts, now)
+local function Note(mails, store, counts, now, noted)
 	local db = ns.db
 	local here, first = {}, {}
 	for _, m in ipairs(mails) do
@@ -95,6 +99,7 @@ local function Note(mails, store, counts, now)
 		for _ = had + 1, n do
 			store[m.item] = store[m.item] or {}
 			table.insert(store[m.item], { at = now, count = m.count, money = m.money, taxed = true })
+			if noted then noted(m.item, m.count, m.money) end
 		end
 		db.salesSeenN[key] = math.max(had, n)
 		db.salesSeen[key] = db.salesSeen[key] or now
@@ -127,8 +132,9 @@ local function ReadSales()
 		local taken = before - (here[key] or 0)
 		if taken > 0 and db.salesSeenN[key] then db.salesSeenN[key] = math.max(0, db.salesSeenN[key] - taken) end
 	end
-	Note(sold, db.sales, counts, now)
-	Note(back, db.returns, counts, now)
+	Note(sold, db.sales, counts, now, ns.StockSale)
+	Note(back, db.returns, counts, now, ns.StockReturned)
+	if ns.StockMailHeld then ns.StockMailHeld(back) end
 	visit = counts
 	Drop(db.sales, now)
 	Drop(db.returns, now)

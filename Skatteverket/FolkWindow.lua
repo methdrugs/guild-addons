@@ -4,11 +4,15 @@
 -- them, and apply, challenge and vote; the guild leader also places holders
 -- with a drop-down, reads the applications, accepts challenges, starts the
 -- round and settles each vote. The rules are in Folk.lua and Bidrag.lua.
+-- Side tabs again since 14/11 (Zach): Representanter (the roles) and
+-- Medlemmar (every member, alts under their main).
 
 local _, ns = ...
 
 local ROW_H = 36
-local page, bidrag
+local page, bidrag, members
+-- Which side tab is open: "rep" Representanter, "med" Medlemmar.
+local side = "rep"
 
 local function Text(parent, template, ...)
 	local fs = parent:CreateFontString(nil, "OVERLAY", template)
@@ -66,6 +70,39 @@ function ns.TextArea(parent, w, h, max, onChange)
 	end)
 	holder.box = box
 	return holder
+end
+
+-- A bookmark tab on the window's right edge, like the spellbook's; the
+-- same as Window.lua's side tabs.
+local function SideTab(parent, k, icon, tip, onClick)
+	local tab = CreateFrame("CheckButton", nil, parent)
+	tab:SetSize(32, 32)
+	tab:SetPoint("TOPLEFT", parent, "TOPRIGHT", 0, -48 - (k - 1) * 48)
+	local back = tab:CreateTexture(nil, "BACKGROUND")
+	back:SetTexture("Interface\\SpellBook\\SpellBook-SkillLineTab")
+	back:SetSize(64, 64)
+	back:SetPoint("TOPLEFT", -3, 11)
+	tab:SetNormalTexture("Interface\\Icons\\" .. icon)
+	local glow = tab:CreateTexture(nil, "HIGHLIGHT")
+	glow:SetTexture("Interface\\Buttons\\ButtonHilight-Square")
+	glow:SetBlendMode("ADD")
+	glow:SetAllPoints()
+	local checked = tab:CreateTexture(nil, "OVERLAY")
+	checked:SetTexture("Interface\\Buttons\\CheckButtonHilight")
+	checked:SetBlendMode("ADD")
+	checked:SetAllPoints()
+	tab:SetCheckedTexture(checked)
+	tab:SetScript("OnClick", function()
+		onClick()
+		if PlaySound and SOUNDKIT then PlaySound(SOUNDKIT.IG_ABILITY_PAGE_TURN) end
+	end)
+	tab:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:AddLine(tip)
+		GameTooltip:Show()
+	end)
+	tab:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	return tab
 end
 
 -- A context menu of choices, scrolling when long; nil on clients without one.
@@ -242,16 +279,17 @@ local function ShowApps(role)
 	detail.child:SetHeight(detail.y)
 end
 
-local function ShowApply(role, target)
+-- app: Ändra ansökan (Zach 14/11), the form filled with what was sent.
+local function ShowApply(role, target, app)
 	ClearDetail()
-	detail.mode, detail.role, detail.target = "apply", role, target
+	detail.mode, detail.role, detail.target, detail.edit = "apply", role, target, app ~= nil
 	local r = ns.ROLE[role]
-	detail.title:SetText((target and "Utmana: " or "Sök: ") .. r.title)
+	detail.title:SetText((app and "Ändra ansökan: " or target and "Utmana: " or "Ansök: ") .. r.title)
 	detail.sub:SetText(r.duty .. "\n|cffffd100Titeln är ett exempel.|r Har du ett bättre namn på rollen, skriv det.")
 	detail.form:Show()
 	detail.form.challenge:SetText(target and ("Du utmanar " .. target .. ". Guildledaren ser utmaningen först; godtar han den får " .. target .. " bara veta att någon utmanar.") or "")
-	detail.form.titleBox:SetText("")
-	detail.form.area.box:SetText("")
+	detail.form.titleBox:SetText(app and app.title or "")
+	detail.form.area.box:SetText(app and app.reason or "")
 end
 
 local function OpenDetail()
@@ -263,13 +301,14 @@ end
 local function CloseDetail()
 	detail:Hide()
 	detail.mode = nil
-	page.list:Show()
+	page.list:SetShown(side == "rep")
 	Refresh()
 end
 
 -- The roles list --------------------------------------------------------
 
--- What the row's button does for this member now.
+-- What the row's button does for this member now; a second label and
+-- click for Dra tillbaka.
 local function Action(role)
 	local b = ns.BallotFor(role.id)
 	local now = ns.Now()
@@ -281,8 +320,16 @@ local function Action(role)
 	if phase == "val" or phase == "slut" then return nil end
 	local app = ns.MyApp()
 	if app then
-		if app.role == role.id then return "Inskickad", nil end
-		return nil
+		if app.role ~= role.id then return nil end
+		-- Ändra ansökan and Dra tillbaka while applications are open, and
+		-- outside a round too (Zach 14/11); never while voting runs (above).
+		return "Ändra ansökan", function() ShowApply(role.id, app.target, app) OpenDetail() end,
+			"Dra tillbaka", function()
+				StaticPopupDialogs.SKATTEVERKET_DRA = StaticPopupDialogs.SKATTEVERKET_DRA or {
+					text = "Dra tillbaka din ansökan till %s?", button1 = "Dra tillbaka", button2 = "Avbryt",
+					OnAccept = function() ns.Withdraw() end, timeout = 0, whileDead = true, hideOnEscape = true }
+				StaticPopup_Show("SKATTEVERKET_DRA", role.title)
+			end
 	end
 	local me = ns.Me()
 	local holders = ns.Holders(role.id)
@@ -295,7 +342,7 @@ local function Action(role)
 		end
 	end
 	if phase == "ans" or #holders < role.seats then
-		return "Sök", function() ShowApply(role.id) OpenDetail() end
+		return "Ansök", function() ShowApply(role.id) OpenDetail() end
 	end
 	return "Utmana", function(self)
 		if #holders == 1 then
@@ -347,17 +394,20 @@ end
 local function PhaseText()
 	local r, phase = ns.Folk().round, ns.RoundPhase()
 	if phase == "ans" then
-		return string.format("|cffffd100Valet är öppet.|r Sök en roll till %s. Röstning %s till %s.", ns.When(r.appEnd), ns.When(r.appEnd), ns.When(r.voteEnd))
+		return string.format("|cffffd100Valet är öppet.|r Ansök om en roll till %s. Röstning %s till %s.", ns.When(r.appEnd), ns.When(r.appEnd), ns.When(r.voteEnd))
 	elseif phase == "val" then
 		return string.format("|cffffd100Röstning pågår till %s.|r En röst per konto och roll, hemlig.", ns.When(r.voteEnd))
 	elseif phase == "slut" then
 		return "Röstningen är slut. Guildledaren fastställer resultatet."
 	end
-	return "Guildets ledare, valda av medlemmarna. Sök en ledig roll, eller utmana den som har den om du tror att du gör det bättre."
+	return "Guildets ledare, valda av medlemmarna. Ansök om en ledig roll, eller utmana den som har den om du tror att du gör det bättre."
 end
+
+local RefreshMembers
 
 Refresh = function()
 	if not page or not page:IsShown() then return end
+	if side == "med" then RefreshMembers() return end
 	local leader = IsGuildLeader()
 	if detail:IsShown() then
 		if detail.mode == "ballot" and detail.ballot then ShowBallot(detail.ballot)
@@ -369,13 +419,18 @@ Refresh = function()
 	for i, role in ipairs(ns.ROLES) do
 		local row = page.rows[i]
 		row.holder:SetText(HolderText(role))
-		local label, click = Action(role)
+		local label, click, label2, click2 = Action(role)
 		row.action:SetShown(label ~= nil)
 		if label then
 			row.action:SetText(label)
+			row.action:SetWidth(math.max(84, row.action:GetFontString():GetStringWidth() + 24))
 			row.action:SetScript("OnClick", click)
 			if click then row.action:Enable() else row.action:Disable() end
 		end
+		row.withdraw:SetShown(label2 ~= nil)
+		if label2 then row.withdraw:SetScript("OnClick", click2) end
+		row.action:ClearAllPoints()
+		row.action:SetPoint("RIGHT", label2 and row.withdraw or row.contact, "LEFT", -4, 0)
 		row.place:SetShown(leader)
 		local n = #ns.AppsFor(role.id)
 		row.apps:SetShown(leader and n > 0)
@@ -437,6 +492,9 @@ function ns.BuildFolk(parent)
 	page.leaderRow:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	for i, role in ipairs(ns.ROLES) do
 		local row = Row(i, role)
+		row.withdraw = Button(row, "Dra tillbaka", 100)
+		row.withdraw:SetPoint("RIGHT", row.contact, "LEFT", -4, 0)
+		row.withdraw:Hide()
 		row.action = Button(row, "", 84)
 		row.action:SetPoint("RIGHT", row.contact, "LEFT", -4, 0)
 		row.place = Button(row, "Innehavare", 84, function(self) PlaceMenu(self, role) end)
@@ -515,11 +573,11 @@ function ns.BuildFolk(parent)
 	form.area:SetPoint("TOPLEFT", 24, -242)
 	local warn = Text(form, "GameFontHighlightSmall", "TOPLEFT", 24, -356)
 	warn:SetWidth(640)
-	warn:SetText("|cffffd100Officiell information:|r när röstningen öppnar visas ditt namn, ditt titelförslag och din motivering för alla medlemmar. Du kan ha en ansökan inne åt gången.")
+	warn:SetText("|cffffd100Officiell information:|r när röstningen öppnar visas ditt namn, ditt titelförslag och din motivering för alla medlemmar. Du kan ha en ansökan inne åt gången, och ändra eller dra tillbaka den så länge ansökan är öppen.")
 	form.challenge = Text(form, "GameFontHighlightSmall", "TOPLEFT", 24, -390)
 	form.challenge:SetWidth(640)
 	form.send = Button(form, "Skicka", 120, function()
-		local ok, why = ns.Apply(detail.role, form.area.box:GetText(), form.titleBox:GetText(), detail.target)
+		local ok, why = ns.Apply(detail.role, form.area.box:GetText(), form.titleBox:GetText(), detail.target, detail.edit)
 		if ok then CloseDetail() elseif why then ns.Print(why) end
 	end)
 	form.send:SetPoint("TOPLEFT", 24, -430)
@@ -527,14 +585,267 @@ function ns.BuildFolk(parent)
 	form:Hide()
 
 
-	-- Ask the leader for the latest, at most once a minute.
+	ns.BuildMembers(parent)
+	page.tabs = {
+		SideTab(parent, 1, "INV_Scroll_05", "Representanter", function() ns.FolkSide("rep") end),
+		SideTab(parent, 2, "INV_Misc_Note_01", "Medlemmar", function() ns.FolkSide("med") end),
+	}
+
+	-- Ask the leader for the latest, at most once a minute; the side tab
+	-- stays as it was left.
 	local asked = 0
 	parent:SetScript("OnShow", function()
-		CloseDetail()
+		detail:Hide()
+		detail.mode = nil
+		ns.FolkSide(side)
 		if not IsGuildLeader() and GetTime() - asked > 60 then
 			asked = GetTime()
 			ns.Send("FQ")
 		end
+	end)
+end
+
+-- Representanter or Medlemmar.
+function ns.FolkSide(which)
+	side = which
+	if which == "med" then
+		detail:Hide()
+		detail.mode = nil
+	end
+	page.list:SetShown(which == "rep" and not detail:IsShown())
+	page.phase:SetShown(which == "rep")
+	members:SetShown(which == "med")
+	page.tabs[1]:SetChecked(which == "rep")
+	page.tabs[2]:SetChecked(which == "med")
+	Refresh()
+end
+
+-- Medlemmar (Zach 14/11) ------------------------------------------------
+
+-- One row per main with its alts under it, everyone in the roster: class,
+-- level, rank, the Folkvald representant role held (in the professions'
+-- place, Zach 14/11; they are on hover), skattenummer and last seen,
+-- never any amounts.
+-- Sorted by name, rank or last seen; a main and its alts move together,
+-- by the main's name and rank and the latest any of them was seen.
+local MEMBER_ROWS, MEMBER_H = 28, 16
+local MEMBER_COLS = {
+	{ "Namn", 170, "name" }, { "Klass", 80 }, { "Level", 40 }, { "Rank", 100 },
+	{ "Representant", 200 }, { "Skattenr", 66 }, { "Senast sedd", 76, "seen" },
+}
+local memberList, memberOffset, memberSort = {}, 0, "name"
+
+-- Seconds since the character was online (0 while online), from the
+-- roster or the last time this client heard from them, whichever is later.
+local function Away(index, online, m)
+	if online then return 0 end
+	local away
+	if GetGuildRosterLastOnline then
+		local y, mo, d, h = GetGuildRosterLastOnline(index)
+		if y then away = (((y * 12 + (mo or 0)) * 30 + (d or 0)) * 24 + (h or 0)) * 3600 end
+	end
+	if m and (m.lastSeen or 0) > 0 then
+		local since = math.max(0, time() - m.lastSeen)
+		if not away or since < away then away = since end
+	end
+	return away
+end
+
+local function SeenText(r)
+	if r.online then return "|cff40ff40online|r" end
+	local a = r.away
+	if not a then return "?" end
+	if a < 3600 then return "< 1 tim" end
+	if a < 86400 then return math.floor(a / 3600) .. " tim" end
+	local d = math.floor(a / 86400)
+	if d < 60 then return d == 1 and "1 dag" or (d .. " dagar") end
+	return math.floor(d / 30) .. " mån"
+end
+
+-- Every role this character holds, in gold, or nothing; the guild leader's
+-- own title too (Zach 14/11: his row said nothing).
+local function RoleText(r)
+	local titles = {}
+	if r.rankIndex == 0 then table.insert(titles, ns.LEADER_ROLE.title) end
+	for id, list in pairs(ns.db.folk and ns.db.folk.holders or {}) do
+		for _, n in ipairs(list) do
+			if n == r.name and ns.ROLE[id] then table.insert(titles, ns.ROLE[id].title) end
+		end
+	end
+	return #titles > 0 and ("|cffffd100" .. table.concat(titles, ", ") .. "|r") or ""
+end
+
+-- The section a main stands in (Zach 14/11): Guildmaster, then the
+-- officers (Representant), then Medborgare, by the main's rank; every
+-- other rank (socials, Pöbeln, Bidragstagare, and any rank added later)
+-- together under Bottenskrapet. Returns an order and a heading.
+local function Section(r)
+	if r.rankIndex == 0 then return 0, r.rank end
+	if ns.EQUAL_RANKS[r.rank] then return 1, r.rank end
+	if r.rank == ns.CITIZEN_RANK then return 2, r.rank end
+	return 99, "Bottenskrapet"
+end
+
+local function ProfText(profs)
+	local list, out = ns.DecodeProfessions(profs), {}
+	for _, p in ipairs(ns.PROFESSIONS) do
+		if list[p.code] then table.insert(out, p.label .. " " .. list[p.code].rank) end
+	end
+	return table.concat(out, ", ")
+end
+
+local function ClassText(r)
+	local c = r.classFile and RAID_CLASS_COLORS and RAID_CLASS_COLORS[r.classFile]
+	if not c then return r.class end
+	local hex = c.colorStr or string.format("ff%02x%02x%02x", math.floor(c.r * 255), math.floor(c.g * 255), math.floor(c.b * 255))
+	return "|c" .. hex .. r.class .. "|r"
+end
+
+-- memberList from the roster; returns how many people (mains and those
+-- without alts).
+local function BuildList()
+	local db, info = ns.db, {}
+	for i = 1, GetNumGuildMembers() do
+		local full, rankName, rankIndex, level, class, _, _, _, online, _, classFile = GetGuildRosterInfo(i)
+		local name = ns.Short(full)
+		if name then
+			local m = db.members[name]
+			info[name] = { name = name, rank = rankName or "", rankIndex = rankIndex or 99, level = level or 0,
+				class = class or "", classFile = classFile, online = online and true or false, away = Away(i, online, m), m = m }
+		end
+	end
+	-- A main no longer in the guild leaves its alts on rows of their own.
+	local mainOf, heads = ns.MainOf(), {}
+	for name in pairs(info) do
+		local main = mainOf[name]
+		if not main or not info[main] then main = name end
+		heads[main] = heads[main] or { r = info[main], alts = {} }
+		if main ~= name then table.insert(heads[main].alts, info[name]) end
+	end
+	local groups = {}
+	for _, g in pairs(heads) do
+		g.away = g.r.away
+		for _, a in ipairs(g.alts) do
+			a.alt = true
+			if a.away and (not g.away or a.away < g.away) then g.away = a.away end
+		end
+		table.sort(g.alts, function(x, y) return x.name < y.name end)
+		table.insert(groups, g)
+	end
+	for _, g in ipairs(groups) do g.order, g.section = Section(g.r) end
+	local never = math.huge
+	table.sort(groups, function(x, y)
+		if x.order ~= y.order then return x.order < y.order end
+		if memberSort == "seen" and (x.away or never) ~= (y.away or never) then return (x.away or never) < (y.away or never) end
+		return x.r.name < y.r.name
+	end)
+	wipe(memberList)
+	local section, headings = nil, 0
+	for _, g in ipairs(groups) do
+		if g.section ~= section then
+			section, headings = g.section, headings + 1
+			table.insert(memberList, { header = section })
+		end
+		table.insert(memberList, g.r)
+		for _, a in ipairs(g.alts) do table.insert(memberList, a) end
+	end
+	return #groups, headings
+end
+
+RefreshMembers = function()
+	if not members or not members:IsShown() then return end
+	local people, headings = BuildList()
+	memberOffset = math.max(0, math.min(memberOffset, #memberList - MEMBER_ROWS))
+	for i, row in ipairs(members.rows) do
+		local r = memberList[i + memberOffset]
+		row.r = r
+		if r and r.header then
+			for c, fs in ipairs(row.cells) do fs:SetText(c == 1 and ("|cffffd100" .. r.header .. "|r") or "") end
+			row.cells[1]:SetPoint("LEFT", 4, 0)
+			row.cells[1]:SetWidth(MEMBER_COLS[1][2] - 6)
+			row:Show()
+		elseif r then
+			local m = r.m
+			local values = { r.alt and ("|cffb0b0b0" .. r.name .. "|r") or r.name, ClassText(r), r.level > 0 and r.level or "",
+				r.rank, RoleText(r), m and ns.Number(m.number) or "-", SeenText(r) }
+			for c, fs in ipairs(row.cells) do fs:SetText(values[c]) end
+			-- Alts stand indented under their main.
+			local indent = r.alt and 14 or 0
+			row.cells[1]:SetPoint("LEFT", 4 + indent, 0)
+			row.cells[1]:SetWidth(MEMBER_COLS[1][2] - 6 - indent)
+			row:Show()
+		else
+			row:Hide()
+		end
+	end
+	for _, h in ipairs(members.headers) do
+		if h.key == memberSort then h.text:SetTextColor(1, 1, 1) else h.text:SetTextColor(1, 0.82, 0) end
+	end
+	local shown = #memberList > MEMBER_ROWS and string.format("Visar %d-%d av %d (scrolla). ", memberOffset + 1,
+		math.min(memberOffset + MEMBER_ROWS, #memberList), #memberList) or ""
+	members.count:SetText(shown .. string.format("%d medlemmar, %d karaktärer; efter rank, alts under sin huvudkaraktär. Klicka på Namn eller Senast sedd för att sortera inom varje rank.",
+		people, #memberList - headings))
+end
+
+function ns.BuildMembers(parent)
+	members = CreateFrame("Frame", nil, parent)
+	members:SetAllPoints()
+	members:Hide()
+	Text(members, "GameFontHighlight", "TOPLEFT", 24, -66):SetText("Alla i guildet, med sina alts under huvudkaraktären.")
+	members.headers, members.rows = {}, {}
+	local x = 0
+	for c, col in ipairs(MEMBER_COLS) do
+		local h = CreateFrame("Button", nil, members)
+		h:SetSize(col[2], 16)
+		h:SetPoint("TOPLEFT", 24 + x, -96)
+		h.text = Text(h, "GameFontNormalSmall", "LEFT", 4, 0)
+		h.text:SetText(col[1])
+		h.key = col[3]
+		if h.key then
+			h:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
+			h:SetScript("OnClick", function()
+				memberSort, memberOffset = h.key, 0
+				RefreshMembers()
+			end)
+		end
+		members.headers[c] = h
+		x = x + col[2]
+	end
+	for i = 1, MEMBER_ROWS do
+		local row = CreateFrame("Frame", nil, members)
+		row:SetSize(x, MEMBER_H)
+		row:SetPoint("TOPLEFT", 24, -114 - (i - 1) * MEMBER_H)
+		row.cells = {}
+		local cx = 0
+		for c, col in ipairs(MEMBER_COLS) do
+			local fs = Text(row, "GameFontHighlightSmall", "LEFT", cx + 4, 0)
+			fs:SetWidth(col[2] - 6)
+			fs:SetWordWrap(false)
+			row.cells[c] = fs
+			cx = cx + col[2]
+		end
+		-- The whole line of professions, and the role, on hover.
+		row:EnableMouse(true)
+		row:SetScript("OnEnter", function(self)
+			local r = self.r
+			if not r or r.header then return end
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			GameTooltip:AddLine(r.name)
+			local roles = RoleText(r)
+			if roles ~= "" then GameTooltip:AddLine(roles, 1, 0.82, 0, true) end
+			local profs = r.m and ProfText(r.m.profs) or ""
+			GameTooltip:AddLine(profs ~= "" and profs or "Inga yrken delade.", 1, 1, 1, true)
+			GameTooltip:Show()
+		end)
+		row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+		members.rows[i] = row
+	end
+	members.count = Text(members, "GameFontDisableSmall", "BOTTOMLEFT", 24, 34)
+	members.count:SetWidth(720)
+	members:EnableMouseWheel(true)
+	members:SetScript("OnMouseWheel", function(_, delta)
+		memberOffset = math.max(0, math.min(memberOffset - delta * 3, #memberList - MEMBER_ROWS))
+		RefreshMembers()
 	end)
 end
 
@@ -548,9 +859,27 @@ local function RefreshBidrag()
 	local left = ns.BidragLeft(size)
 	local ask = ns.MyBidragAsk()
 	bidrag.form:SetShown(not leader or bidrag.writing)
-	bidrag.asks:SetShown(leader and not bidrag.writing)
+	bidrag.asks:SetShown(leader and not bidrag.writing and not bidrag.history)
 	bidrag.toggle:SetShown(leader)
 	bidrag.toggle:SetText(bidrag.writing and "Ansökningar" or "Sök själv")
+	bidrag.histToggle:SetShown(leader and not bidrag.writing)
+	bidrag.histToggle:SetText(bidrag.history and "Ansökningar" or "Historik")
+	-- The history (Zach 14/11): below the form for a member, a view of its
+	-- own for the leader.
+	local showHist = not leader or (bidrag.history and not bidrag.writing)
+	bidrag.hist:SetShown(showHist)
+	if showHist then
+		bidrag.hist:ClearAllPoints()
+		bidrag.hist:SetPoint("TOPLEFT", 24, leader and -130 or -200)
+		local list = ns.BidragHistory()
+		bidrag.histOffset = math.max(0, math.min(bidrag.histOffset or 0, #list - #bidrag.histRows))
+		bidrag.histTitle:SetText(leader and "Givet, senaste 90 dagarna" or "Fått, senaste 90 dagarna")
+		for i, fs in ipairs(bidrag.histRows) do
+			local e = list[i + bidrag.histOffset]
+			fs:SetText(e and string.format("%s   %s: %d väsk%s med %d platser", ns.When(e.at), e.name, e.count, e.count == 1 and "a" or "or", e.size) or "")
+		end
+		bidrag.histNone:SetShown(#list == 0)
+	end
 	if ask then
 		bidrag.status:SetText(string.format("Din ansökan om %d väsk%s med %d platser skickades %s och väntar på guildledaren.",
 			ask.count, ask.count == 1 and "a" or "or", ask.size, ns.When(ask.at)))
@@ -628,5 +957,31 @@ function ns.BuildBidrag(parent)
 		RefreshBidrag()
 	end)
 	bidrag.toggle:SetPoint("BOTTOMRIGHT", -24, 28)
+	-- The leader's history view (Zach 14/11).
+	bidrag.histToggle = Button(parent, "", 110, function()
+		bidrag.history = not bidrag.history
+		bidrag.histOffset = 0
+		RefreshBidrag()
+	end)
+	bidrag.histToggle:SetPoint("RIGHT", bidrag.toggle, "LEFT", -8, 0)
+
+	-- The history: bags given, newest first; the wheel scrolls.
+	local hist = CreateFrame("Frame", nil, parent)
+	hist:SetSize(470, 300)
+	bidrag.hist = hist
+	bidrag.histTitle = Text(hist, "GameFontNormal", "TOPLEFT", 0, 0)
+	bidrag.histNone = Text(hist, "GameFontDisable", "TOPLEFT", 0, -22)
+	bidrag.histNone:SetText("Inga väskor än.")
+	bidrag.histRows = {}
+	for i = 1, 15 do
+		local fs = Text(hist, "GameFontHighlight", "TOPLEFT", 0, -22 - (i - 1) * 18)
+		fs:SetWidth(470)
+		bidrag.histRows[i] = fs
+	end
+	hist:EnableMouseWheel(true)
+	hist:SetScript("OnMouseWheel", function(_, delta)
+		bidrag.histOffset = math.max(0, (bidrag.histOffset or 0) - delta * 3)
+		RefreshBidrag()
+	end)
 	parent:SetScript("OnShow", RefreshBidrag)
 end

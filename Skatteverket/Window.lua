@@ -701,6 +701,11 @@ end
 
 -- Open the window that holds page n, on that page.
 function ns.ShowTab(n)
+	-- Yrken turned off under Delar (Zach 14/11): every way in ends here.
+	if (n == 2 or n == 8) and not ns.YrkenOn() then
+		ns.Print(ns.YrkenOffText())
+		return
+	end
 	local id = PAGE_WINDOW[n] or "skatt"
 	local w = wins[id] or Build(id)
 	w.page = n
@@ -714,6 +719,12 @@ function ns.ShowTab(n)
 	end
 	Layout(w)
 	ns.RefreshWindow(id)
+end
+
+-- Close one window if it is open (Delar: Yrken turned off).
+function ns.CloseWindow(id)
+	local w = wins[id]
+	if w and w.frame:IsShown() then w.frame:Hide() end
 end
 
 -- /skatt, /skatt yrken and the rest: open that window on that page, or

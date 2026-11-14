@@ -11,6 +11,13 @@
 --   days of prices behind it.
 -- - When to post: the item's best hour of the day, if 10% or more above
 --   its usual price, from the hour profile (Market.lua).
+-- 0.6.6 (Zach 12/11), all within the same budget:
+-- - Vendor flip: an AH listing under what a vendor pays for it, after the
+--   guild tax; one scan is enough; at least 10% and 20 silver an action.
+-- - Level for profit: below 300 in a profession, the recipe that pays the
+--   most per skill point (and pays at all) to its next colour.
+-- - Craft for a vendor: a recipe whose reagents cost less than what a
+--   vendor pays for the product after the guild tax (x 0.95 at 5%).
 -- Bokföring only shows; buying stays one click per purchase in Auctionator.
 
 local _, ns = ...
@@ -21,6 +28,47 @@ local MAX_CRAFTS = 20
 local FLIP_SOLD, FLIP_UNDER, FLIP_DAYS = 3, 0.2, 7
 local HOUR_ABOVE = 0.10
 local BUDGET_SHARE = 0.25
+local VENDOR_SHARE, VENDOR_MIN = 0.10, 2000 -- 10% and 20 silver an action
+local VENDOR_MAX = 50 -- bought in one vendor flip
+local VENDOR_KEEP = 30 -- vendor flips kept from a scan
+local VENDOR_FRESH = 86400 -- a scan older than this is not trusted
+local LEVEL_CAP = 300
+local LEVEL_MAX_CRAFTS = 60
+
+-- What a vendor pays for one, after the guild tax.
+local function VendorKeep(item)
+	return ns.VendorSell(item) * (1 - ns.TaxRate())
+end
+
+-- Only items the game already has loaded: asking for every item of a
+-- scan would send thousands of requests. Without the check (this client
+-- may lack it), only items Bokföring already knows.
+local function Loaded(item)
+	local cached = C_Item and C_Item.IsItemDataCachedByID
+	if cached then
+		local ok, yes = pcall(cached, item)
+		return ok and yes
+	end
+	return ns.db.vendor[item] ~= nil or (ns.db.stock and ns.db.stock[item] ~= nil)
+end
+
+-- From each full scan (Core.lua's Count): items listed under what a vendor
+-- pays, best first, kept until the next scan.
+function ns.RecordVendorFlips(counts)
+	local list = {}
+	for item, c in pairs(counts) do
+		if c.lo and c.lo > 0 and Loaded(item) then
+			local each = VendorKeep(item) - c.lo
+			local n = math.min(c.q or 1, VENDOR_MAX)
+			if each >= c.lo * VENDOR_SHARE and each * n >= VENDOR_MIN then
+				table.insert(list, { item = item, price = c.lo, q = c.q or 1, gain = each * n })
+			end
+		end
+	end
+	table.sort(list, function(a, b) return a.gain > b.gain end)
+	for k = #list, VENDOR_KEEP + 1, -1 do list[k] = nil end
+	ns.db.vendorFlips = { at = time(), list = list }
+end
 
 -- The budget for today: set with /bok budget, else a quarter of the gold
 -- he had when the day began (Zach 10/11: a quarter of the gold now shrank
@@ -57,8 +105,9 @@ end
 -- Every action worth doing, unsorted: { kind, gain, cost, text, detail, ... }.
 local function Candidates()
 	local out, me = {}, ns.MeKey()
+	local rows, crafting = ns.Rows(nil, false), {}
 	-- Craft and sell, or post what is already made.
-	for _, r in ipairs(ns.Rows(nil, false)) do
+	for _, r in ipairs(rows) do
 		if r.recipe.by[me] and r.profit and r.profit > 0 and r.sold and r.sold >= 0.5 and r.cost then
 			local item, qty = r.recipe.item, r.recipe.qty or 1
 			local want = math.min(MAX_CRAFTS * qty, math.max(1, math.floor(r.sold * SHARE + 0.5)))
@@ -73,10 +122,67 @@ local function Candidates()
 			end
 			local crafts = math.ceil((want - have - up) / qty)
 			if crafts > 0 then
+				crafting[r.id] = true
 				table.insert(out, { kind = "craft", id = r.id, item = item, n = crafts, gain = each * crafts * qty, cost = r.cost * crafts,
 					text = string.format("Craft %d %s", crafts, r.recipe.name or ns.ItemName(item)),
 					detail = string.format("+%s (%s each), costs %s, %.0f sell a day%s%s", ns.Money(each * crafts * qty), ns.Money(each),
 						ns.Money(r.cost * crafts), r.sold, up > 0 and string.format(", %d already on the AH", up) or "", when and (", " .. when) or "") })
+			end
+		end
+	end
+	-- Craft for a vendor: what a vendor pays beats the reagents, and beats
+	-- selling it on the auction house.
+	for _, r in ipairs(rows) do
+		local item, qty = r.recipe.item, r.recipe.qty or 1
+		if r.recipe.by[me] and r.cost and item then
+			local keep = VendorKeep(item) * qty
+			local each = keep - r.cost
+			local ah = r.profit and r.sold and r.sold >= 0.5 and r.profit or nil
+			if keep > 0 and each > 0 and each * MAX_CRAFTS >= VENDOR_MIN and not (ah and ah >= each) then
+				local n = MAX_CRAFTS
+				table.insert(out, { kind = "vcraft", id = r.id, item = item, n = n, gain = each * n, cost = r.cost * n,
+					text = string.format("Craft %d %s for a vendor", n, r.recipe.name or ns.ItemName(item)),
+					detail = string.format("+%s (%s a craft): a vendor pays %s after tax, the reagents cost %s", ns.Money(each * n), ns.Money(each),
+						ns.Money(keep), ns.Money(r.cost)) })
+			end
+		end
+	end
+	-- Level for profit: per profession under 300, the recipe paying the most
+	-- per point up to its next colour, if it pays at all.
+	local skills, best = ns.MySkills(), {}
+	for _, r in ipairs(rows) do
+		local profession, colour = r.recipe.profession, r.recipe.by[me]
+		local skill = profession and skills[profession]
+		if skill and skill < LEVEL_CAP and colour and colour ~= "x" and r.cost and not crafting[r.id] then
+			local p = setmetatable({ have = skill, skillColour = colour, skill = ns.LearnInfo(r.recipe).skill }, { __index = r })
+			ns.LevelPlan(p, true, true)
+			if p.perPoint and p.perPoint > 0 and p.levelN <= LEVEL_MAX_CRAFTS and (not best[profession] or p.perPoint > best[profession].perPoint) then
+				best[profession] = p
+			end
+		end
+	end
+	for profession, p in pairs(best) do
+		local gain = p.perPoint * p.levelPoints
+		table.insert(out, { kind = "level", id = p.id, item = p.recipe.item, n = p.levelN, gain = gain, cost = p.cost * p.levelN, whole = true,
+			text = string.format("Craft %d %s: +%d %s, +%s after selling", p.levelN, p.recipe.name or ns.ItemName(p.recipe.item), p.levelPoints,
+				profession, ns.Money(gain)),
+			detail = string.format("to %s at %d, reagents %s, %s a point; extra crafts at the vendor's price", p.levelTo, p.have + p.levelPoints,
+				ns.Money(p.cost * p.levelN), ns.Money(p.perPoint)) })
+	end
+	-- Vendor flips from the last scan, at today's price where Auctionator
+	-- has one.
+	local vf = ns.db.vendorFlips
+	if vf and time() - vf.at < VENDOR_FRESH then
+		for _, f in ipairs(vf.list) do
+			local price, age = ns.AH(f.item)
+			if not price or age ~= 0 then price = f.price end
+			local each = VendorKeep(f.item) - price
+			local n = math.min(f.q, VENDOR_MAX)
+			if each >= price * VENDOR_SHARE and each * n >= VENDOR_MIN then
+				table.insert(out, { kind = "vflip", item = f.item, n = n, gain = each * n, cost = price * n, price = price,
+					text = string.format("Buy %d %s for a vendor", n, ns.ItemName(f.item)),
+					detail = string.format("listed at %s, a vendor pays %s after tax: +%s; buy only at %s or less", ns.Money(price),
+						ns.Money(VendorKeep(f.item)), ns.Money(each * n), ns.Money(price)) })
 			end
 		end
 	end
@@ -112,7 +218,9 @@ function ns.Today()
 			-- Fewer, if some fit; else shown greyed, over budget (Zach 10/11).
 			local each = a.cost / a.n
 			local n = each > 0 and math.floor((budget - used) / each) or 0
-			if n >= 1 and a.kind ~= "post" then
+			-- A levelling run is whole or not at all: fewer crafts give
+			-- other points.
+			if n >= 1 and a.kind ~= "post" and not a.whole then
 				a.gain, a.cost = a.gain * n / a.n, each * n
 				a.text = a.text:gsub("^(%a+) %d+", "%1 " .. n)
 				a.n = n
@@ -191,13 +299,14 @@ local function Build(frame)
 		b:SetScript("OnClick", function(self)
 			local a = self.action
 			if not a then return end
-			if a.kind == "craft" then
+			if a.kind == "craft" or a.kind == "level" or a.kind == "vcraft" then
 				if not ns.Recipe(a.id) then ns.Rows(nil, true) end
 				ns.AskCrafts(a.id, a.n, false)
-			elseif a.kind == "flip" then
+			elseif a.kind == "flip" or a.kind == "vflip" then
 				-- A list of its own, kept as a plan so the buys count against
 				-- the budget and show in History (Zach 10/11).
-				local name = "Bokföring: flip " .. ns.ItemName(a.item)
+				local name = (a.kind == "vflip" and "Bokföring: vendor flip " or "Bokföring: flip ") .. ns.ItemName(a.item)
+				if a.kind == "vflip" then ns.Print(string.format("buy %s only at %s each or less; sell them to any vendor.", ns.ItemName(a.item), ns.Money(a.price))) end
 				ns.BuyList(name, { { a.item, a.n } })
 				local plan = ns.NewPlan(nil, a.item, a.n, false, { [a.item] = a.n }, name, { name = ns.ItemName(a.item), qty = 1, reagents = {} })
 				plan.flip = true
@@ -209,8 +318,12 @@ local function Build(frame)
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 			GameTooltip:SetItemByID(a.item)
 			GameTooltip:AddLine(" ")
-			if a.kind == "craft" then
+			if a.kind == "craft" or a.kind == "vcraft" then
 				GameTooltip:AddLine("Click: the shopping list for these crafts, the number filled in.", 0.25, 1, 0.25, true)
+			elseif a.kind == "level" then
+				GameTooltip:AddLine("Click: the shopping list for these crafts. Skill points as the colour guide expects them; what the market will not take is counted at the vendor's price.", 0.25, 1, 0.25, true)
+			elseif a.kind == "vflip" then
+				GameTooltip:AddLine("Click: an Auctionator list to buy them. Buy only at the price shown or less, then sell them to a vendor.", 0.25, 1, 0.25, true)
 			elseif a.kind == "flip" then
 				GameTooltip:AddLine("Click: an Auctionator list to buy them. Sell them again at the usual price.", 0.25, 1, 0.25, true)
 			else
@@ -246,7 +359,8 @@ function ns.ShowToday(frame, show)
 	view:SetShown(show)
 end
 
-local ICONS = { craft = "Interface\\Icons\\Trade_Engineering", post = "Interface\\Icons\\INV_Misc_Coin_02", flip = "Interface\\Icons\\INV_Misc_Bag_10" }
+local ICONS = { craft = "Interface\\Icons\\Trade_Engineering", post = "Interface\\Icons\\INV_Misc_Coin_02", flip = "Interface\\Icons\\INV_Misc_Bag_10",
+	vflip = "Interface\\Icons\\INV_Misc_Coin_02", vcraft = "Interface\\Icons\\Trade_Engineering", level = "Interface\\Icons\\Trade_Engineering" }
 
 function ns.RefreshToday(frame)
 	local actions, _, used = ns.Today()
@@ -272,7 +386,7 @@ function ns.RefreshToday(frame)
 	view.empty:SetShown(#actions == 0)
 	view.empty:SetText("Nothing worth doing right now: scan the auction house with Auctionator twice a few hours apart, and open your profession windows once.")
 	frame.status:SetText(used > 0 and ("uses " .. ns.Money(used)) or "")
-	frame.note:SetText("Best first: crafts that sell, what you already have, and items to buy cheap and sell again. Click an action for its shopping list.")
+	frame.note:SetText("Best first: crafts that sell, what you already have, items to buy cheap and sell again, vendor flips, crafts for a vendor and levelling that pays. Click an action for its shopping list.")
 end
 
 -- /bok budget 50g, or /bok budget off for a quarter of your gold.

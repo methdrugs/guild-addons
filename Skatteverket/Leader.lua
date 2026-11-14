@@ -18,6 +18,57 @@ local function SendAdjustment(name, adj)
 	ns.SendTo(name, string.format("A;%s;%s;%d", adj.id, adj.op, adj.amount))
 end
 
+-- 0.34.1 and newer: the member sends its totals and the base, the totals
+-- this copy last answered with. The change since the base is added here,
+-- so this copy is the master and two computers each add their own part
+-- (Zach 12/11). No base: a new install, an old copy on another computer,
+-- or the first P after updating. Per figure: a bigger one there already
+-- holds ours; a smaller one from a newer install than the record is new
+-- income on top of ours; a smaller one from an older install was counted
+-- before. A P sent again on the same base counts only what is new since.
+local function Merge(sender, m, parts)
+	local t = { i = tonumber(parts[3]) or 0, p = tonumber(parts[4]) or 0, o = tonumber(parts[5]) or 0 }
+	local key = parts[14] .. "/" .. (parts[15] or "")
+	local restored
+	if m.paid == nil then
+		m.incomeTotal, m.paid, m.owed = t.i, t.p, t.o
+	elseif m.applied and m.applied.key == key then
+		m.incomeTotal = (m.incomeTotal or 0) + t.i - m.applied.i
+		m.paid = m.paid + t.p - m.applied.p
+		m.owed = (m.owed or 0) + t.o - m.applied.o
+	elseif parts[14] ~= "" then
+		local bi, bp, bo = strsplit(",", parts[14])
+		m.incomeTotal = (m.incomeTotal or 0) + t.i - (tonumber(bi) or 0)
+		m.paid = m.paid + t.p - (tonumber(bp) or 0)
+		m.owed = (m.owed or 0) + t.o - (tonumber(bo) or 0)
+	else
+		local mi, mp = m.incomeTotal or 0, m.paid
+		if t.i >= mi and t.p >= mp then
+			-- The same computer, first P after updating.
+			m.incomeTotal, m.paid, m.owed = t.i, t.p, t.o
+		else
+			local fresh = (tonumber(parts[15]) or 0) > (m.firstSeen or 0) + 3600
+			m.incomeTotal = t.i >= mi and t.i or fresh and mi + t.i or mi
+			m.paid = t.p >= mp and t.p or fresh and mp + t.p or mp
+			if fresh then m.owed = (m.owed or 0) + t.o end
+			restored = true
+		end
+	end
+	m.applied = { key = key, i = t.i, p = t.p, o = t.o }
+	m.version = parts[2]
+	m.lastDeposit = math.max(m.lastDeposit or 0, tonumber(parts[6]) or 0)
+	m.incomeSince = tonumber(parts[7]) or 0
+	local debt, good = tonumber(parts[9]) or 0, tonumber(parts[10]) or 0
+	m.debtSince = debt > 0 and debt or nil
+	m.goodSince = good > 0 and good or nil
+	m.debtAge, m.goodAge = tonumber(parts[11]), tonumber(parts[12])
+	-- A new install's account id gives way to the one on record; the member takes it back.
+	if parts[13] and parts[13] ~= "" and (not m.account or parts[16] ~= "1") then m.account = parts[13] end
+	m.hasPaid = m.paid > 0
+	ns.SendTo(sender, string.format("M;%d;%d;%d;%d;%s;%s;%s", m.paid, m.lastDeposit, m.incomeTotal, m.owed,
+		m.account or "", restored and "1" or "", parts[17] or ""))
+end
+
 -- P;version;income total;paid;owed;last deposit;income since;rate stamp;debt since;good since
 function ns.OnPrivate(sender, parts)
 	-- Only from people in the guild, so strangers cannot add rows (review 6/11).
@@ -26,7 +77,9 @@ function ns.OnPrivate(sender, parts)
 	local m = db.members[sender] or { firstSeen = time() }
 	db.members[sender] = m
 	local paid = tonumber(parts[4]) or 0
-	if (m.paid or 0) > paid and sender ~= ns.Me() then
+	if parts[14] and sender ~= ns.Me() then
+		Merge(sender, m, parts)
+	elseif (m.paid or 0) > paid and sender ~= ns.Me() then
 		-- Their saved data was lost; send ours back and keep it until they answer.
 		ns.SendTo(sender, string.format("M;%d;%d", m.paid, m.lastDeposit or 0))
 	else
@@ -57,8 +110,13 @@ end
 function ns.OnAck(sender, id)
 	local list = ns.db.pending[sender]
 	if not list then return end
+	local m = ns.db.members[sender]
 	for i = #list, 1, -1 do
-		if list[i].id == id then table.remove(list, i) end
+		if list[i].id == id then
+			-- The preview in Adjust goes; the member's next P carries the change (0.34.1).
+			if m and m.owed and list[i].preview then m.owed = m.owed - list[i].preview end
+			table.remove(list, i)
+		end
 	end
 	if #list == 0 then ns.db.pending[sender] = nil end
 end
@@ -145,8 +203,10 @@ function ns.Adjust(name, op, amount)
 	table.insert(db.pending[name], adj)
 	local m = db.members[name]
 	if m and m.owed then
+		local was = m.owed
 		if op == "F" and m.owed > 0 then m.owed = 0 end
 		if op == "C" then m.owed = m.owed - adj.amount end
+		adj.preview = m.owed - was
 		if m.owed < 1 then
 			m.debtSince = nil
 			if m.debtAge then m.debtAge = 0 end

@@ -12,7 +12,8 @@ local _, ns = ...
 
 local ROWS, ROW_H = 16, 18
 local COLS = { { "Nr", 60 }, { "Namn", 150 }, { "Level", 45 }, { "Typ", 45 }, { "Intressen", 100 } }
-local FOUND_COLS = { { "Recept", 170 }, { "Namn", 140 }, { "Yrke", 90 } }
+-- Namn is wider since 0.34.2 for the skill-up marker (Zach 12/11).
+local FOUND_COLS = { { "Recept", 150 }, { "Namn", 160 }, { "Yrke", 90 } }
 local SECONDARY = { COO = true, FA = true, FIS = true }
 local LIST_W = 400
 
@@ -55,11 +56,16 @@ local function Headers(cols)
 	return f
 end
 
--- Hover a recipe: the item's (or spell's) own tooltip, like the profession window.
+-- Hover a recipe: the item's (or spell's) own tooltip, like the profession
+-- window; in the search, a line when the crafter still levels on it.
+local POINT_WORD = { o = "orange", y = "gul", g = "grön" }
 local function RecipeTooltip(self)
 	if self.link then
 		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 		GameTooltip:SetHyperlink(self.link)
+		if self.points then
+			GameTooltip:AddLine(string.format("Ger skill-up för %s (%s), så de står först.", self.crafter, POINT_WORD[self.points] or "?"), 0.25, 1, 0.25, true)
+		end
 		GameTooltip:Show()
 	elseif self.member then
 		local m = ns.db.members[self.member]
@@ -167,6 +173,7 @@ function ns.BuildRegistry(parent)
 		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 		GameTooltip:AddLine("Sök i alla yrken i hela guildet")
 		GameTooltip:AddLine("Recept och föremål, och recept som använder det du söker som reagens.", 1, 1, 1, true)
+		GameTooltip:AddLine("Kan flera göra samma recept står den som får skill-up av det först, märkt ger skill-up.", 1, 1, 1, true)
 		GameTooltip:Show()
 	end)
 	page.search:HookScript("OnLeave", function() GameTooltip:Hide() end)
@@ -255,7 +262,7 @@ function ns.RefreshRegistry()
 	if searching then page.foundHeaders:Show() else page.foundHeaders:Hide() end
 
 	for i, row in ipairs(rows) do
-		row.whisper, row.member, row.key, row.link = nil, nil, nil, nil
+		row.whisper, row.member, row.key, row.link, row.points, row.crafter = nil, nil, nil, nil, nil, nil
 		ShowCells(row.cells, not searching)
 		ShowCells(row.found, searching)
 		if searching then
@@ -263,12 +270,16 @@ function ns.RefreshRegistry()
 			if hit then
 				local p = ns.PROFESSION_BY_CODE[hit.code]
 				-- Offline in grey (Zach 7/11): send mail instead of a whisper.
-				local who = hit.online and hit.name or ("|cff808080" .. hit.name .. " (offline)|r")
+				-- Skill-up marker (Zach 12/11): when two or more can make it,
+				-- the one who still levels on it is first and marked.
+				local mark = hit.points and " |cff40ff40ger skill-up|r" or ""
+				local who = hit.online and (hit.name .. mark) or ("|cff808080" .. hit.name .. "|r" .. mark .. " |cff808080(offline)|r")
 				local recipe = hit.uses and (hit.recipe .. " |cff999999(reagens)|r") or hit.recipe
 				local values = { recipe, who, p and p.label or hit.code }
 				for c, fs in ipairs(row.found) do fs:SetText(values[c]) end
 				row.whisper = hit.online and hit.name or nil
 				row.key, row.link = hit.key, ns.RecipeLink(hit.key)
+				row.points, row.crafter = hit.points, hit.name
 				row:Show()
 			else
 				row:Hide()
@@ -309,6 +320,52 @@ function ns.RefreshRegistry()
 	page.count:SetText(shown .. string.format("Inte registrerade än: %d.", missing))
 end
 
+-- One main per account (Zach 14/11): the account remembers its main by
+-- full name in db.main, and every other character on it is an alt, so
+-- there is always exactly one. Ticking Huvudkaraktär moves it; Alt is
+-- greyed out on the main. The other characters learn it when they next
+-- log in; their saved data is their own.
+function ns.AccountMain()
+	return ns.db and ns.db.main
+end
+
+-- This character's reg.main from the account's choice. Accounts from
+-- before 0.34.2 saved none: the first signed character that says main
+-- takes the place.
+function ns.SyncMain()
+	local reg, me, db = ns.char and ns.char.reg, ns.Me(), ns.db
+	if not reg or not me then return end
+	if not db.main and reg.main ~= false then db.main = me end
+	reg.main = db.main == me
+end
+
+-- Saved with Huvudkaraktär ticked: this one is the main, the rest alts.
+-- The main cannot make itself an alt.
+function ns.SetMain(main)
+	local reg, me = ns.char.reg, ns.Me()
+	if not reg then return end
+	reg.main = main
+	if main and me then ns.db.main = me end
+	ns.SyncMain()
+end
+
+-- Every profile (Y) goes out with the account's choice: Professions.lua
+-- sends it, wrapped here so a former main says alt from its first one.
+local SendProfile = ns.SendProfile
+function ns.SendProfile(...)
+	ns.SyncMain()
+	return SendProfile(...)
+end
+
+-- Under the boxes: why Alt is greyed out on the main, or who stops being
+-- the main when this one is saved as main.
+function ns.MainNote(isMain, choiceMain)
+	local main, me = ns.AccountMain(), ns.Me()
+	if isMain then return "välj en annan karaktär som huvudkaraktär först" end
+	if choiceMain and main and main ~= me then return main .. " blir alt." end
+	return ""
+end
+
 -- Min anmälan: this character's registration in the panel (Zach 7/11),
 -- instead of the scroll. Main or alt and interests can be changed here.
 local mine, mainBox, altBox, interestBoxes, choice = nil, nil, nil, {}, {}
@@ -319,6 +376,7 @@ local function Check(parent, label, x, y, onClick)
 	box:SetPoint("TOPLEFT", x, y)
 	local text = Text(box, "GameFontHighlight", "LEFT", box, "RIGHT", 2, 1)
 	text:SetText(label)
+	box.label = text
 	box:SetScript("OnClick", onClick)
 	return box
 end
@@ -343,6 +401,8 @@ function ns.BuildMine(parent)
 	Text(mine, "GameFontNormal", "TOPLEFT", 24, -262):SetText("Karaktär")
 	mainBox = Check(mine, "Huvudkaraktär", 150, -256, function() choice.main = true ns.RefreshMine() end)
 	altBox = Check(mine, "Alt", 300, -256, function() choice.main = false ns.RefreshMine() end)
+	mine.mainNote = Text(mine, "GameFontDisableSmall", "LEFT", altBox.label, "RIGHT", 8, 0)
+	mine.mainNote:SetWidth(150)
 	Text(mine, "GameFontNormal", "TOPLEFT", 24, -296):SetText("Intressen")
 	for i, interest in ipairs(ns.INTERESTS) do
 		local col, row = (i - 1) % 2, math.floor((i - 1) / 2)
@@ -365,7 +425,8 @@ function ns.BuildMine(parent)
 		for _, interest in ipairs(ns.INTERESTS) do
 			if choice.interests[interest.letter] then letters = letters .. interest.letter end
 		end
-		reg.main, reg.interests = choice.main, letters
+		ns.SetMain(choice.main)
+		reg.interests = letters
 		ns.SendProfile()
 		ns.Print("din anmälan är uppdaterad.")
 		ns.RefreshMine()
@@ -375,7 +436,9 @@ end
 -- Called when the page opens: the boxes start from what is saved.
 function ns.ResetMine()
 	local reg = ns.char.reg
-	choice.main = not reg or reg.main ~= false
+	ns.SyncMain()
+	local main = ns.AccountMain()
+	choice.main = reg and reg.main ~= false or not reg and (not main or main == ns.Me())
 	choice.interests = {}
 	for _, interest in ipairs(ns.INTERESTS) do
 		if reg and (reg.interests or ""):find(interest.letter, 1, true) then choice.interests[interest.letter] = true end
@@ -410,5 +473,10 @@ function ns.RefreshMine()
 	end
 	mainBox:SetChecked(choice.main)
 	altBox:SetChecked(not choice.main)
+	-- The saved main cannot be made an alt here (Zach 14/11).
+	local isMain = reg ~= nil and me ~= nil and ns.AccountMain() == me
+	if isMain then altBox:Disable() else altBox:Enable() end
+	altBox.label:SetFontObject(isMain and "GameFontDisable" or "GameFontHighlight")
+	mine.mainNote:SetText(ns.MainNote(isMain, choice.main))
 	for i, interest in ipairs(ns.INTERESTS) do interestBoxes[i]:SetChecked(choice.interests[interest.letter] and true or false) end
 end

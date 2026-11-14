@@ -170,7 +170,13 @@ local function Tooltip(self)
 	end
 	GameTooltip:AddLine(" ")
 	GameTooltip:AddLine("Vänsterklick: öppna panelen", 0.7, 0.7, 0.7)
-	GameTooltip:AddLine("Högerklick: välj Skatt, Yrken, Swedbank" .. (BokforingAPI and " eller Bokföring" or ""), 0.7, 0.7, 0.7)
+	-- Only the parts that are on (Delar, Zach 14/11).
+	local parts = { "Skatt" }
+	if ns.YrkenOn() then table.insert(parts, "Yrken") end
+	if SwedbankPanel then table.insert(parts, "Swedbank") end
+	if BokforingAPI then table.insert(parts, "Bokföring") end
+	local last = table.remove(parts)
+	GameTooltip:AddLine("Högerklick: välj " .. (#parts > 0 and (table.concat(parts, ", ") .. " eller ") or "") .. last, 0.7, 0.7, 0.7)
 	GameTooltip:AddLine("Shift+dra: flytta knappen", 0.7, 0.7, 0.7)
 	GameTooltip:Show()
 end
@@ -195,8 +201,9 @@ function ns.AddonMenu(owner)
 		-- Right under the title (Zach 12/11): who leads, and contact them.
 		root:CreateButton("Folkvald representant", function() ns.ShowTab(11) end)
 		root:CreateButton("Skatt", function() ns.ShowTab(1) end)
-		root:CreateButton("Yrken", function() ns.ShowTab(2) end)
-		root:CreateButton("Swedbank", function() ns.ShowTab(6) end)
+		-- Yrken and Swedbank only while on (Delar, Zach 14/11).
+		if ns.YrkenOn() then root:CreateButton("Yrken", function() ns.ShowTab(2) end) end
+		if SwedbankPanel then root:CreateButton("Swedbank", function() ns.ShowTab(6) end) end
 		if BokforingAPI then root:CreateButton("Bokföring", function() BokforingAPI.Toggle() end) end
 		-- Not addons of their own: below a line (Zach 9/11).
 		if root.CreateDivider then root:CreateDivider() end

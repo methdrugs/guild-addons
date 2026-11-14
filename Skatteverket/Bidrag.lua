@@ -10,7 +10,15 @@
 --
 -- Whispers:
 --   FG;size;count;level      member -> leader: a request
---   FH;size;count;declined   leader -> member: sent (declined 1: turned down)
+--   FH;size;count;declined[;stamp]   leader -> member: sent (declined 1:
+--                            turned down); stamp (0.34.2) when he pressed Klar
+--
+-- History (Zach 14/11): every Klar goes into db.bidrag.log as { name,
+-- size, count, at } on the leader's account; the member's client adds its
+-- own when the answer comes, marked own, and the same stamp makes one
+-- entry of both on the leader's own account. The leader sees every entry,
+-- a member only the own ones (the account's characters). Older than 90
+-- days is dropped. Bags given before 0.34.2 are only counted, not listed.
 
 local _, ns = ...
 
@@ -29,9 +37,43 @@ local function B()
 	-- Leader: requests by name, and what each account has been given.
 	b.asks = b.asks or {}
 	b.given = b.given or {}
+	-- Bags given, newest last (0.34.2).
+	b.log = b.log or {}
 	return b
 end
 ns.Bidrag = B
+
+local KEEP = 90 * 86400
+
+local function Prune()
+	local log, cut = B().log, ns.Now() - KEEP
+	for i = #log, 1, -1 do
+		if (log[i].at or 0) < cut then table.remove(log, i) end
+	end
+end
+
+-- One entry per recipient, size and stamp; own marks the member's side.
+local function Log(name, size, count, at, own)
+	for _, e in ipairs(B().log) do
+		if e.name == name and e.size == size and e.at == at then
+			if own then e.own = true end
+			return
+		end
+	end
+	table.insert(B().log, { name = name, size = size, count = count, at = at, own = own or nil })
+	Prune()
+end
+
+-- What the history shows here, newest first.
+function ns.BidragHistory()
+	Prune()
+	local out, all = {}, IsGuildLeader()
+	for _, e in ipairs(B().log) do
+		if all or e.own then table.insert(out, e) end
+	end
+	table.sort(out, function(a, b) return a.at > b.at end)
+	return out
+end
 
 function ns.BidragSize(level)
 	return (level or UnitLevel("player")) < ns.BIDRAG_LEVEL and 6 or 8
@@ -95,12 +137,14 @@ function ns.BidragDone(name, declined)
 	local a = B().asks[name]
 	if not a then return end
 	B().asks[name] = nil
+	local at = ns.Now()
 	if not declined then
 		local acct = Account(name)
 		B().given[acct] = B().given[acct] or {}
 		B().given[acct][a.size] = (B().given[acct][a.size] or 0) + a.count
+		Log(name, a.size, a.count, at)
 	end
-	ns.ToMember(name, string.format("FH;%d;%d;%d", a.size, declined and 0 or a.count, declined and 1 or 0))
+	ns.ToMember(name, string.format("FH;%d;%d;%d;%d", a.size, declined and 0 or a.count, declined and 1 or 0, at))
 	ns.RefreshWindow("folk")
 	ns.RefreshTodo()
 end
@@ -126,6 +170,7 @@ function ns.OnBidragGiven(parts)
 		text = string.format("Socialbidrag: din ansökan om väskor med %d platser avböjdes.", size)
 	else
 		B().got[size] = (B().got[size] or 0) + count
+		if ns.Me() and count > 0 then Log(ns.Me(), size, count, tonumber(parts[5]) or ns.Now(), true) end
 		text = string.format("Socialbidrag: %d väsk%s med %d platser är skickad%s till dig.", count, count == 1 and "a" or "or", size, count == 1 and "" or "e")
 		if size == 6 then text = text .. " När du når nivå " .. ns.BIDRAG_LEVEL .. " kan du söka 3 väskor med 8 platser." end
 	end

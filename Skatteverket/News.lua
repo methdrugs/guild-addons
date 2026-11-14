@@ -12,6 +12,25 @@ local _, ns = ...
 -- enough, "restart" when the release adds files the game only reads at
 -- start; shown in red under the version.
 ns.NOTES = {
+	{ "0.34.2", "2026-11-14", after = "restart", {
+		"Skickat: i brevlådan finns en ny flik, Skickat, med allt du skickat från alla dina karaktärer de senaste 30 dagarna: till vem, ämne, saker, guld och postförskott. Sök på namn, ämne eller sak. Listan finns bara hos dig.",
+		"Huvudkaraktär: ett konto har en huvudkaraktär. Bockar du i Huvudkaraktär på en karaktär blir de andra alts; på huvudkaraktären går Alt inte att välja förrän du valt en annan.",
+		"Folkvald representant 0.5: ny flik Medlemmar, en rad per huvudkaraktär med alts under. Klass, level, rank, roll som Folkvald representant, skattenummer och senast sedd (yrkena när du håller musen över); uppdelat efter rank, med alla andra ranker under Bottenskrapet; sortera på namn eller senast sedd. Inga belopp.",
+		"Folkvald representant 0.5: du kan ändra din ansökan eller dra tillbaka den (Ändra ansökan, Dra tillbaka), utom medan röstningen pågår.",
+		"Arbetsorder 0.5: väljer du att hantverkaren köper materialet betalar du material + 10 % mot postförskott när det färdiga kommer med posten. Hantverkaren får Fyll i brev med sakerna och postförskottet ifyllt. Det gäller även order som redan ligger inne.",
+		"Arbetsorder 0.5: hantverkaren får Fyll i brev för det färdiga på varje godkänd order, även när du skickat materialet själv (då utan postförskott).",
+		"Yrken 0.5: söker du ett recept som flera kan göra står den som fortfarande får skill-up av det först, märkt ger skill-up.",
+		"Inställningar: ny del Delar. Yrken (med Arbetsorder) går att stänga av för en karaktär, Swedbank och Bokföring för alla dina karaktärer, och slå på igen. Stänger du av Yrken avbryts dina öppna arbetsordrar och dina recept syns inte längre i guildets receptsök. Swedbank går inte att stänga av medan du har ett lån.",
+		"Socialbidrag: under fliken syns nu vilka väskor ditt konto fått och när, de senaste 90 dagarna.",
+		"Bokföring 0.7: varje material du har bär med sig vad det kostade, så vinsten på det du tillverkar och säljer räknas på vad du faktiskt betalat, även för material köpta för flera dagar sedan. Today visar också köp som går att sälja till en vendor med vinst, levling som går med vinst och recept som lönar sig att sälja till en vendor.",
+	} },
+	{ "0.34.1", "2026-11-12", after = "reload", {
+		"/installningar öppnar Inställningar, även om minimapknappen är gömd. /skatt inställningar gör samma sak.",
+		"Byter du dator, eller spelar samma karaktär på två datorer, räknas din skatt, inkomst och vad du betalat nu en gång: guildledarens kopia gäller, och det du tjänat på varje dator läggs till. Har din nya dator börjat om från noll hämtas dina siffror från guildledaren när ni båda är online.",
+		"Rangen Representant räknas som Medborgare: allt i Skatteverket är öppet, och Arbetsorder kan tas emot.",
+		"Folkvald representant: knappen Sök heter nu Ansök.",
+		"Anmälan: Signera och Senare syns direkt, du behöver inte vänta på att texten skrivit klart. Pergamentet krymper så att det får plats på mindre skärmar.",
+	} },
 	{ "0.34", "2026-11-12", after = "restart", {
 		"Folkvald representant 0.4: guildets ledare, valda av medlemmarna (högerklicka blixten, överst under THÖNDERSTÖRM). Varje roll beskrivs med vad den innebär; titeln är ett exempel och du får föreslå en bättre. Sök med en motivering på högst 200 tecken, en ansökan åt gången. Har någon redan rollen kan du utmana; godtar guildledaren utmaningen röstar guildet i 3 dagar.",
 		"Folkvald representant 0.4: Kontakta mig! på varje rad öppnar ett ärende i Kontakta oss! till den som har rollen och guildledaren (till guildledaren om rollen är vakant).",

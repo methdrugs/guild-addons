@@ -3,7 +3,8 @@
 -- guild's top roles, each described by what it does; the title is only an
 -- example, and whoever applies may suggest a better one. A member applies
 -- with a required "varför just jag" (200 characters), one application at a
--- time; a held role can be challenged. The guild leader alone sees the
+-- time, which can be changed or withdrawn while applications are open (Zach
+-- 14/11); a held role can be challenged. The guild leader alone sees the
 -- applications. Places are decided by an anonymous vote: the first round
 -- has an application period and a voting period (Thursday to Saturday
 -- afternoon, then to Sunday evening), later the leader starts a vote for a
@@ -23,6 +24,9 @@
 --   FC;id;name;i;n;title~reason      a candidate on it, in pieces
 --   FT;id;winner,winner;name=count,...  a ballot's result (yes/no as name=yes/no)
 --   FO;text                          a raid warning to everyone online
+--   FM;stamp;main,alt,alt;main,alt   which characters share an account, for
+--                                    Medlemmar (Zach 14/11): names only, the
+--                                    account's main first, accounts with alts only
 -- Guild channel, from anyone:
 --   FQ                               ask the leader for all of the above
 -- Whispers to the leader:
@@ -33,6 +37,7 @@
 --   FW;role                          you are being challenged (a raid warning)
 -- Whispers to the leader, also:
 --   FX;role                          I resign (Avgå)
+--   FU;role                          I withdraw my application (Dra tillbaka, Zach 14/11)
 -- Socialbidrag (FG, FH) is in Bidrag.lua; the tickets of Kontakta oss! and
 -- Kontakta mig! (FK, FY, FZ, FP to the leader; FE, FJ, FD from him) in Contact.lua.
 
@@ -97,6 +102,8 @@ local function F()
 	f.apps = f.apps or {}
 	f.tally = f.tally or {}
 	f.to = f.to or {}
+	-- Main -> its alts, as the leader last served them (FM, Zach 14/11).
+	f.links = f.links or {}
 	return f
 end
 ns.Folk = F
@@ -299,6 +306,118 @@ local function Account(name)
 end
 ns.Account = Account
 
+-- Accounts for Medlemmar (Zach 14/11): one row per main with its alts
+-- under it. Only the leader knows every account (each P carries it), so
+-- he serves the groups with the rest on FQ, names only and only accounts
+-- with alts: the guild sees who shares an account, never the account id.
+-- Everyone knows their own account themselves (db.chars, db.main).
+local function AccountOf(name)
+	local db = ns.db
+	if name == ns.Me() or (db.chars and db.chars[name]) then return db.account end
+	local m = db.members[name]
+	return m and m.account
+end
+
+-- The main among an account's characters, as far as the leader knows: the
+-- account's own choice on his account; else the newest profile that says
+-- main (the one ticked last), else the lowest skattenummer, else the name.
+local function PickMain(names, acct)
+	local db = ns.db
+	if acct == db.account and db.main then
+		for _, n in ipairs(names) do
+			if n == db.main then return n end
+		end
+	end
+	local members, best = db.members, nil
+	for _, n in ipairs(names) do
+		if members[n].main and (not best or (members[n].profileAt or 0) > (members[best].profileAt or 0)) then best = n end
+	end
+	if best then return best end
+	for _, n in ipairs(names) do
+		local num = members[n].number
+		if num and (not best or num < members[best].number) then best = n end
+	end
+	return best or names[1]
+end
+
+-- Leader: main -> its alts, for everyone in the guild now.
+local function LeaderGroups()
+	local roster, byAcct, groups = ns.RosterNames(), {}, {}
+	for name in pairs(ns.db.members) do
+		local acct = (not roster or roster[name]) and AccountOf(name)
+		if acct then
+			byAcct[acct] = byAcct[acct] or {}
+			table.insert(byAcct[acct], name)
+		end
+	end
+	for acct, names in pairs(byAcct) do
+		if #names > 1 then
+			table.sort(names)
+			local main, alts = PickMain(names, acct), {}
+			for _, n in ipairs(names) do
+				if n ~= main then table.insert(alts, n) end
+			end
+			groups[main] = alts
+		end
+	end
+	return groups
+end
+
+-- Leader: the groups to the guild, in pieces under 250 bytes; an empty
+-- FM clears what members had. Kept on his account too, for his alts.
+local function SendLinks()
+	local f, stamp = F(), ns.Now()
+	local head, chunk, length = "FM;" .. stamp, {}, 0
+	f.links, f.linkStamp = LeaderGroups(), stamp
+	for main, alts in pairs(f.links) do
+		local row = main .. "," .. table.concat(alts, ",")
+		-- A dozen alts would not fit one message; the rest wait for the next time.
+		while #row > 230 and #alts > 1 do
+			table.remove(alts)
+			row = main .. "," .. table.concat(alts, ",")
+		end
+		if #chunk > 0 and #head + length + #row + 1 > 250 then
+			Queue(head .. ";" .. table.concat(chunk, ";"))
+			chunk, length = {}, 0
+		end
+		table.insert(chunk, row)
+		length = length + #row + 1
+	end
+	Queue(#chunk > 0 and (head .. ";" .. table.concat(chunk, ";")) or head)
+end
+
+local function OnLinks(parts)
+	local f = F()
+	local stamp = tonumber(parts[2]) or 0
+	if stamp < (f.linkStamp or 0) then return end
+	if stamp > (f.linkStamp or 0) then f.links, f.linkStamp = {}, stamp end
+	for i = 3, #parts do
+		local names = { strsplit(",", parts[i]) }
+		local main = table.remove(names, 1)
+		if main and main ~= "" then f.links[main] = names end
+	end
+	Changed()
+end
+
+-- Name -> its account's main, for every character on an account with
+-- alts (a main maps to itself). This account's own choice wins over what
+-- the leader last served.
+function ns.MainOf()
+	local f, db, out = F(), ns.db, {}
+	local groups = IsGuildLeader() and LeaderGroups() or f.links
+	for main, alts in pairs(groups) do
+		out[main] = main
+		for _, n in ipairs(alts) do out[n] = main end
+	end
+	local own = 0
+	for _ in pairs(db.chars or {}) do own = own + 1 end
+	if db.main and own > 1 then
+		for n in pairs(db.chars) do out[n] = db.main end
+		out[db.main] = db.main
+	end
+	return out
+end
+
 -- "ans" while applications are open, "val" while the round's vote runs,
 -- "slut" once it has ended until the leader has settled it, nil for none.
 function ns.RoundPhase()
@@ -387,6 +506,7 @@ local function Serve()
 	servedAt = GetTime()
 	BroadcastRound()
 	for _, r in ipairs(ns.ROLES) do Queue(string.format("FS;%d;%s;%s", F().holderStamp[r.id] or 0, r.id, table.concat(Holders(r.id), ","))) end
+	SendLinks()
 	local now = ns.Now()
 	for id, b in pairs(F().ballots) do
 		-- Open ballots, and results of the last week.
@@ -639,18 +759,44 @@ function ns.MyApp()
 end
 
 -- Apply (or challenge target). Returns false with a reason when it cannot.
-function ns.Apply(role, reason, title, target)
+-- edit (Ändra ansökan, Zach 14/11): the application is sent again, which
+-- replaces the old one on the leader's side; only while applications are
+-- open. The title and reason are kept in c.app to fill the form again.
+function ns.Apply(role, reason, title, target, edit)
 	reason = ns.CleanText(reason, REASON_MAX)
 	title = ns.CleanText(title, TITLE_MAX)
 	if Len(reason) < 10 then return false, "skriv varför just du passar, minst några ord." end
 	local c = C()
-	if c.app then return false, "du har redan en ansökan inne." end
-	c.app = { role = role, at = ns.Now(), challenge = target and true or nil, target = target }
+	if edit then
+		if not c.app or c.app.role ~= role then return false, "du har ingen ansökan inne till den rollen." end
+		local phase = ns.RoundPhase()
+		if phase == "val" or phase == "slut" then return false, "ansökan är stängd, röstningen har börjat." end
+		target = c.app.target
+	elseif c.app then
+		return false, "du har redan en ansökan inne."
+	end
+	c.app = { role = role, at = ns.Now(), challenge = target and true or nil, target = target, title = title, reason = reason }
 	local online = ns.ToLeader("FA", string.format("%s;%d;%s", role, target and 1 or 0, target or ""), title .. "~" .. reason)
-	ns.Print(string.format("din %s till %s är %s.", target and "utmaning" or "ansökan", ROLE[role].title,
+	ns.Print(string.format("din %s%s till %s är %s.", edit and "ändrade " or "", target and "utmaning" or "ansökan", ROLE[role].title,
 		online and "skickad till guildledaren" or "sparad och skickas när guildledaren är online"))
 	Changed()
 	return true
+end
+
+-- Dra tillbaka (Zach 14/11): while applications are open, or outside a
+-- round, the member takes the application back and the leader drops it.
+-- Not once voting has started: the application is on the ballot then.
+function ns.Withdraw()
+	local c = C()
+	local app = c.app
+	if not app or not ROLE[app.role] then return end
+	local phase = ns.RoundPhase()
+	if phase == "val" or phase == "slut" then ns.Print("ansökan är stängd, röstningen har börjat.") return end
+	c.app = nil
+	local online = ns.ToLeader("FU", app.role)
+	ns.Print(string.format("din ansökan till %s är tillbakadragen%s", ROLE[app.role].title,
+		online and "." or "; guildledaren får veta det när hen är online."))
+	Changed()
 end
 
 function ns.Vote(b, key, choice)
@@ -712,18 +858,40 @@ local function OnApp(sender, head, text)
 	local f = F()
 	local phase = ns.RoundPhase()
 	if phase == "val" or phase == "slut" then
-		Note(sender, "Ansökan är stängd medan omröstningen pågår. Sök igen efter resultatet.", true)
+		Note(sender, "Ansökan är stängd medan omröstningen pågår. Ansök igen efter resultatet.", true)
 		return
 	end
 	-- One open application per member (Zach 11/11); a new one replaces it.
+	local before = f.apps[sender]
 	f.apps[sender] = { role = role, reason = reason, title = title, at = ns.Now(),
 		challenge = (challenge and phase ~= "ans") or nil, target = target ~= "" and target or nil }
 	if sender ~= ns.Me() then
+		local edited = before and before.role == role and not f.apps[sender].challenge
 		ns.Print(string.format("|cffffd100%s %s %s.|r Se Folkvald representant.", sender,
-			f.apps[sender].challenge and "utmanar om" or "söker", ROLE[role].title))
+			f.apps[sender].challenge and "utmanar om" or edited and "har ändrat sin ansökan till" or "söker", ROLE[role].title))
 		if SOUNDKIT and SOUNDKIT.READY_CHECK then PlaySound(SOUNDKIT.READY_CHECK) end
 	end
 	Changed()
+end
+
+-- Dra tillbaka: the application goes. Arriving after the vote has opened
+-- (the member was offline from the leader), it is on the ballot already
+-- and stays; the member hears so.
+local function OnWithdraw(sender, parts)
+	local role = parts[2]
+	if not ROLE[role or ""] then return end
+	local f = F()
+	local a = f.apps[sender]
+	if a and a.role == role then
+		f.apps[sender] = nil
+		if sender ~= ns.Me() then ns.Print(string.format("%s drog tillbaka sin ansökan till %s.", sender, ROLE[role].title)) end
+		Changed()
+		return
+	end
+	local b = BallotFor(role)
+	if b and b.cands[sender] and not b.result then
+		Note(sender, string.format("Din ansökan till %s är redan med i omröstningen och kan inte dras tillbaka.", ROLE[role].title), false)
+	end
 end
 
 local function OnVote(sender, parts)
@@ -840,6 +1008,7 @@ function ns.OnFolk(sender, parts, whisper)
 			elseif kind == "FV" then OnVote(sender, parts)
 			elseif kind == "FG" and ns.OnBidragAsk then ns.OnBidragAsk(sender, parts)
 			elseif kind == "FX" then OnResign(sender, parts)
+			elseif kind == "FU" then OnWithdraw(sender, parts)
 			end
 		end
 		if fromLeader then
@@ -866,6 +1035,7 @@ function ns.OnFolk(sender, parts, whisper)
 		elseif kind == "FB" then OnBallot(parts)
 		elseif kind == "FC" then Receive(sender, parts, OnCandidate)
 		elseif kind == "FT" then OnResult(parts)
+		elseif kind == "FM" then OnLinks(parts)
 		elseif kind == "FO" and parts[2] then
 			Warn(parts[2])
 		end

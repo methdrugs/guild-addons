@@ -591,30 +591,73 @@ end
 local WARN_MB = 10
 local CLEAN_DAYS = 60
 
-local function Bytes(value, seen)
-	if type(value) ~= "table" then return #tostring(value) + 2 end
-	if seen[value] then return 0 end
-	seen[value] = true
-	local n = 4
-	for k, v in pairs(value) do n = n + Bytes(k, seen) + Bytes(v, seen) + 6 end
-	return n
+-- Measured a little at a time (Zach 14/11: "script ran too long" at login
+-- once the data had grown): a coroutine walks the data, 2000 values a
+-- frame. Each table's keys are copied before its values are walked, so
+-- data that changes between frames never breaks the walk. The last result
+-- is kept for /bok test and the warning.
+local SIZE_STEP = 2000
+local last, measuring, waiting = nil, nil, {}
+
+local function Walk()
+	local count = 0
+	local seen = {}
+	local function Bytes(value)
+		count = count + 1
+		if count % SIZE_STEP == 0 then coroutine.yield() end
+		if type(value) ~= "table" then return #tostring(value) + 2 end
+		if seen[value] then return 0 end
+		seen[value] = true
+		local keys = {}
+		for k in pairs(value) do keys[#keys + 1] = k end
+		local n = 4
+		for _, k in ipairs(keys) do
+			local v = value[k]
+			if v ~= nil then n = n + Bytes(k) + Bytes(v) + 6 end
+		end
+		return n
+	end
+	local total, biggest, most = 0, nil, 0
+	local top = {}
+	for k in pairs(ns.db or {}) do top[#top + 1] = k end
+	for _, k in ipairs(top) do
+		local v = ns.db[k]
+		if v ~= nil then
+			local n = Bytes(v) + #tostring(k) + 6
+			total = total + n
+			if n > most then biggest, most = k, n end
+		end
+	end
+	return { mb = total / 1048576, biggest = biggest, most = most / 1048576, at = time() }
 end
 
--- Megabytes in all, and the biggest part by name.
-function ns.DataSize()
-	local total, biggest, most = 0, nil, 0
-	for k, v in pairs(ns.db or {}) do
-		local n = Bytes(v, {}) + #tostring(k) + 6
-		total = total + n
-		if n > most then biggest, most = k, n end
-	end
-	return total / 1048576, biggest, most / 1048576
+-- Measures, then calls done(result); calls made while one runs wait for it.
+function ns.DataSize(done)
+	if done then table.insert(waiting, done) end
+	if measuring then return end
+	measuring = coroutine.create(Walk)
+	local ticker
+	ticker = C_Timer.NewTicker(0, function()
+		local ok, result = coroutine.resume(measuring)
+		if not ok then
+			ticker:Cancel()
+			measuring, waiting = nil, {}
+			error(result)
+		end
+		if coroutine.status(measuring) == "dead" then
+			ticker:Cancel()
+			measuring, last = nil, result
+			local calls = waiting
+			waiting = {}
+			for _, call in ipairs(calls) do call(result) end
+		end
+	end)
 end
 
 -- Market days and crafts older than 60 days out; income and purchases
 -- (History) stay, they are the valuable part.
 local function Clean()
-	local before = ns.DataSize()
+	local before = last and last.mb
 	local oldest = Day(time() - CLEAN_DAYS * 86400)
 	for item, days in pairs(ns.db.market or {}) do
 		for key in pairs(days) do
@@ -631,7 +674,10 @@ local function Clean()
 	for item, h in pairs(ns.db.hours or {}) do
 		if h.d < oldest then ns.db.hours[item] = nil end
 	end
-	ns.Print(string.format("cleaned: saved data %.1f MB, was %.1f MB. Saved to disk at logout or /reload.", ns.DataSize(), before))
+	ns.DataSize(function(r)
+		ns.Print(string.format("cleaned: saved data %.1f MB%s. Saved to disk at logout or /reload.", r.mb,
+			before and string.format(", was %.1f MB", before) or ""))
+	end)
 end
 
 StaticPopupDialogs.BOKFORING_SIZE = {
@@ -645,8 +691,9 @@ StaticPopupDialogs.BOKFORING_SIZE = {
 }
 
 function ns.ShowSize()
-	local mb, biggest = ns.DataSize()
-	StaticPopup_Show("BOKFORING_SIZE", string.format("%.1f", mb), tostring(biggest))
+	ns.DataSize(function(r)
+		StaticPopup_Show("BOKFORING_SIZE", string.format("%.1f", r.mb), tostring(r.biggest))
+	end)
 end
 
 -- Once a session, a little after login.
@@ -655,12 +702,17 @@ check:RegisterEvent("PLAYER_LOGIN")
 check:SetScript("OnEvent", function()
 	C_Timer.After(15, function()
 		if not ns.db then return end
-		if ns.DataSize() >= WARN_MB then ns.ShowSize() end
+		ns.DataSize(function(r)
+			if r.mb >= WARN_MB then StaticPopup_Show("BOKFORING_SIZE", string.format("%.1f", r.mb), tostring(r.biggest)) end
+		end)
 	end)
 end)
 
 -- For /bok test.
+-- For /bok test: the last measure, and a new one starts.
 function ns.SizeTest()
-	local mb, biggest, most = ns.DataSize()
-	return string.format("about %.2f MB, the most in %s (%.2f MB); a warning comes at %d MB", mb, tostring(biggest), most, WARN_MB)
+	ns.DataSize()
+	if not last then return "measuring, ask again in a few seconds" end
+	return string.format("about %.2f MB at %s, the most in %s (%.2f MB); a warning comes at %d MB", last.mb, date("%H:%M", last.at),
+		tostring(last.biggest), last.most, WARN_MB)
 end

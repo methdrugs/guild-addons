@@ -91,6 +91,7 @@ local function Check(parent, label, onClick, ...)
 	box:SetPoint(...)
 	local text = Ink(parent, 14, nil, "LEFT", box, "RIGHT", 2, 0)
 	text:SetText(label)
+	box.label = text
 	box:SetScript("OnClick", function(self)
 		Sound(self:GetChecked() and "IG_MAINMENU_OPTION_CHECKBOX_ON" or "IG_MAINMENU_OPTION_CHECKBOX_OFF")
 		onClick(self)
@@ -157,9 +158,10 @@ end
 -- In order (Zach 7/11): the intro writes itself; then the grand reveal,
 -- the form fades in with a page sound; then a pause to look it over; then
 -- the terms write themselves; then the signature line
--- fades in, and the buttons appear. A click on the paper
--- finishes it at once.
-local REVEAL, VERIFY = 1.2, 3.5
+-- fades in. A click on the paper finishes it at once. The buttons are
+-- there from the start (Zach 12/11: members filled in the form and found
+-- nowhere to sign for half a minute); Signera finishes the text first.
+local REVEAL, VERIFY = 1.2, 1
 local writing
 local function Finish()
 	writing = nil
@@ -179,7 +181,7 @@ local function Write()
 	form:SetAlpha(0)
 	signBlock:SetAlpha(0)
 	scroll.terms:SetAlpha(0)
-	scroll.buttons:Hide()
+	scroll.buttons:Show()
 	scroll.intro:SetAlphaGradient(0, GRADIENT)
 	scroll:SetScript("OnUpdate", function(_, elapsed)
 		writing.t = writing.t + elapsed
@@ -247,13 +249,16 @@ local function Sign()
 	if writing then Finish() end
 	local char = ns.char
 	if char.reg then
-		char.reg.main, char.reg.interests = choice.main, Interests()
+		-- One main per account (Zach 14/11, Registry.lua).
+		ns.SetMain(choice.main)
+		char.reg.interests = Interests()
 		Sound("IG_QUEST_LIST_CLOSE")
 		scroll:Hide()
 		ns.SendProfile()
 		return
 	end
 	char.reg = { at = time(), main = choice.main, interests = Interests() }
+	ns.SetMain(choice.main)
 	-- Said now, inside the click: the game lets an addon /say only from a
 	-- click. Chat already shows who says it, so no name in the text (Zach 7/11).
 	SendChatMessage("Jag har registrerat mig hos Skatteverket och är nu medborgare i " .. ns.GUILD .. "!", ANNOUNCE)
@@ -450,6 +455,9 @@ local function Build()
 	Heading(form, "Karaktär", x, y)
 	mainBox = Check(form, "Huvudkaraktär", function() choice.main = true ns.RefreshScroll() end, "TOPLEFT", x, y - 22)
 	altBox = Check(form, "Alt", function() choice.main = false ns.RefreshScroll() end, "TOPLEFT", x + 160, y - 22)
+	-- Beside Alt, on two lines if need be.
+	scroll.mainNote = Ink(form, 11, FADED, "LEFT", altBox.label, "RIGHT", 10, 0)
+	scroll.mainNote:SetWidth(200)
 
 	y = y - 54
 	Heading(form, "Intressen", x, y)
@@ -549,6 +557,12 @@ function ns.RefreshScroll()
 
 	mainBox:SetChecked(choice.main)
 	altBox:SetChecked(not choice.main)
+	-- The saved main cannot be made an alt (Zach 14/11).
+	local isMain = reg ~= nil and ns.Me() ~= nil and ns.AccountMain() == ns.Me()
+	if isMain then altBox:Disable() else altBox:Enable() end
+	altBox.label:SetTextColor(unpack(isMain and FADED or INK))
+	altBox.label:SetAlpha(isMain and 0.5 or 1)
+	scroll.mainNote:SetText(ns.MainNote(isMain, choice.main))
 
 	-- Mid-signature the name is still writing itself; leave it alone.
 	if signing then return end
@@ -591,13 +605,20 @@ function ns.ShowScroll()
 	if not scroll then Build() end
 	ShowPage(1, true)
 	local reg = ns.char.reg
-	choice.main = not reg or reg.main ~= false
+	ns.SyncMain()
+	-- A new character on an account that has its main already starts as an alt.
+	local main = ns.AccountMain()
+	choice.main = reg and reg.main ~= false or not reg and (not main or main == ns.Me())
 	for _, box in ipairs(interestBoxes) do
 		box:SetChecked(reg and (reg.interests or ""):find(box.letter, 1, true) and true or false)
 	end
 	scroll.stamp:SetScale(1)
 	scroll.stamp:SetAlpha(1)
 	SetTexts()
+	-- Smaller on a short screen (Zach 12/11): with a large UI scale the
+	-- buttons at the foot were below the edge. The rolls stick out 35 each way.
+	local room = UIParent:GetHeight() - 20
+	scroll:SetScale(math.min(1, room / (H + 70)))
 	Sound("IG_QUEST_LIST_OPEN")
 	scroll:Show()
 	ns.RefreshScroll()

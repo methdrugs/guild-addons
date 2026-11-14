@@ -353,8 +353,11 @@ end
 -- price), less what they cost and, for one not learned, the recipe's
 -- price. Skill-up chance as in Classic: orange always, then falling from
 -- yellow to nothing at grey.
+-- nextColour (Today, 0.6.6): only as far as the next colour, the cheapest
+-- route there.
 local GUESS = { o = 1, y = 0.6, g = 0.25 }
-function ns.LevelPlan(r, learned)
+local TURNS = { [2] = "yellow", [3] = "green", [4] = "grey" }
+function ns.LevelPlan(r, learned, nextColour)
 	local skill, colour = r.have, r.skillColour
 	if not skill or not r.cost or not (colour == "o" or colour == "y" or colour == "g") then return end
 	local crafts, points, to
@@ -364,6 +367,11 @@ function ns.LevelPlan(r, learned)
 		local function Chance(x) return x < t[2] and 1 or math.max(0.05, (t[4] - x) / math.max(t[4] - t[2], 1)) end
 		local target = skill < t[3] and t[3] or t[4]
 		to = skill < t[3] and "green" or "grey"
+		if nextColour then
+			for k = 4, 2, -1 do
+				if skill < t[k] then target, to = t[k], TURNS[k] end
+			end
+		end
 		crafts, points = 0, target - skill
 		for x = skill, target - 1 do crafts = crafts + 1 / Chance(x) end
 	else

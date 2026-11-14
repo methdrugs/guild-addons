@@ -6,8 +6,10 @@
 -- the citizen rank or higher, both ends (Zach 9/11: a privilege for good,
 -- honest members). The crafter accepts, declines with a reason, or marks it
 -- done; the one ordering can cancel. An unanswered order runs out when the
--- wait is over. No prices: those are agreed in a whisper, and nothing here
--- moves gold. The minimap bolt shows a hammer while orders wait for you.
+-- wait is over. When the crafter buys the materials, the finished crafts go
+-- by C.O.D., material + 10 % (Zach 12/11); otherwise prices are agreed in a
+-- whisper. The addon never sends or accepts gold itself. The minimap bolt
+-- shows a hammer while orders wait for you.
 --
 -- Whispers, hidden:
 --   O;id;from;to;key;count;mats;until;stamp;state;reason;note
@@ -20,7 +22,10 @@
 --        recipe's reagents; 16th: what the crafter makes of them first,
 --        item:crafts,... (Zach 10/11); 17th (0.31): who gets the finished
 --        crafts when not the one ordering, set by the guild leader only
---        (Zach 11/11: a smith's crafts straight to the enchanter)
+--        (Zach 11/11: a smith's crafts straight to the enchanter); 18th
+--        (0.34.2): the material cost in copper when the crafter buys, "-"
+--        when no price was known; empty or missing on older orders, which
+--        are priced at the mailbox. Older clients ignore it.
 -- Guild channel:
 --   X        at login: send me my orders; whoever holds some answers by whisper
 
@@ -34,7 +39,9 @@ local STATE = { ny = "Ny", accepterad = "Accepterad", klar = "Klar", ["avböjd"]
 local OPEN = { ny = true, accepterad = true }
 -- Whose materials (Zach 9/11): the crafter's, against a tip of a tenth of
 -- what the reagents cost, so nobody orders without putting in their share.
-local MATS = { e = "Beställaren skickar materialet", h = "Hantverkaren löser materialet, mot 10 % dricks" }
+-- Zach 12/11: that is a purchase, only who does the buying differs, so the
+-- orderer pays material + 10 % by C.O.D. (postförskott) on the finished crafts.
+local MATS = { e = "Beställaren skickar materialet", h = "Hantverkaren köper materialet, du betalar material + 10 % mot postförskott" }
 local TIP = 0.10
 
 local function Orders()
@@ -98,7 +105,8 @@ end
 
 local function Pack(o)
 	return table.concat({ "O", o.id, o.from, o.to, o.key, o.count, o.mats, o["until"], o.stamp, o.state, o.reason or "", Clean(o.note), o.tip or "",
-		EncodeSent(o.sent), EncodeList(o.raw, "count"), EncodeList(o.steps, "crafts"), o.deliver or "" }, ";")
+		EncodeSent(o.sent), EncodeList(o.raw, "count"), EncodeList(o.steps, "crafts"), o.deliver or "",
+		o.cost == false and "-" or o.cost or "" }, ";")
 end
 
 -- To the other party, and to the leader who keeps it for the offline.
@@ -118,7 +126,7 @@ end
 
 -- Orders waiting for this character to act on: new or accepted, to them.
 function ns.OrdersToDo()
-	if ns.Locked() then return 0 end
+	if ns.Locked() or not ns.YrkenOn() then return 0 end
 	local me, n = ns.Me(), 0
 	for _, o in pairs(Orders()) do
 		if o.to == me and OPEN[State(o)] then n = n + 1 end
@@ -139,7 +147,7 @@ end
 
 function ns.OrderNotices()
 	local out = {}
-	if not ns.db or ns.Locked() then return out end
+	if not ns.db or ns.Locked() or not ns.YrkenOn() then return out end
 	-- Once (0.32): orders that closed before the notices are no news.
 	if not ns.db.ordersNoticed then
 		for _, o in pairs(Orders()) do
@@ -218,9 +226,54 @@ local function ReagentCost(key, count)
 	if #missing == 0 then return buy end
 end
 
+-- The C.O.D. (Zach 12/11): material + 10 %, the full price of the reagents,
+-- since materials the crafter already holds are the crafter's win. The
+-- cost is fixed on the order when it is placed (o.cost; false when no
+-- price was known then); orders from before 0.34.2 have none and are
+-- priced now, from the same prices as the order dialog. Nothing when the
+-- orderer sends the materials or the crafts go to someone else (Skicka
+-- till: the crafter collects by hand). Returns the amount, the material
+-- cost, and true when priced now.
+local function CODAmount(o)
+	if o.mats ~= "h" or o.deliver then return end
+	local cost, now = o.cost, false
+	if cost == nil then cost, now = ReagentCost(o.key, o.count), true end
+	if not cost then return end
+	return cost + math.floor(cost * TIP), cost, now
+end
+
+-- The material cost as another client reports it: whole copper within
+-- reason, false for "-" (no price known), nil for anything else.
+local function ParseCost(text)
+	if text == "-" then return false end
+	local n = text and text:match("^%d+$") and tonumber(text)
+	if n and n < 1e9 then return n end
+end
+
+-- Where the finished crafts go: the recipient the guild leader named, else
+-- the one ordering.
+local function CraftsTo(o)
+	return o.deliver or o.from
+end
+
+-- The payment line for an order where the crafter buys the materials.
+local function PayText(o)
+	if o.mats ~= "h" then return end
+	if o.deliver then
+		local cost = o.cost
+		if cost == nil then cost = ReagentCost(o.key, o.count) end
+		return string.format("inget (det färdiga går till %s); %s tar material + 10 %%%s av %s för hand", o.deliver:match("^(%S+)"),
+			o.to:match("^(%S+)"), cost and (", ungefär " .. ns.Money(cost + math.floor(cost * TIP))) or "", o.from:match("^(%S+)"))
+	end
+	local cod, cost, now = CODAmount(o)
+	if cod then return string.format("%s (material %s + 10 %%%s)", ns.Money(cod), ns.Money(cost), now and ", dagens priser" or "") end
+	if o.cost == false then return "inget, pris saknades när ordern lades; hantverkaren sätter det" end
+	return "inget, inget pris i dag; hantverkaren sätter det"
+end
+
 function ns.PlaceOrder(to, key, count, mats, days, note, raw, steps, deliver)
 	local me = ns.Me()
-	if not me or not to or to == me or ns.Locked() then return end
+	if not me or not to or to == me or ns.Locked() or not ns.YrkenOn() then return end
 	if not ns.IsCitizen(to) then
 		ns.Print(to .. " är inte " .. ns.CITIZEN_RANK .. " och kan inte ta emot arbetsordrar.")
 		return
@@ -230,8 +283,11 @@ function ns.PlaceOrder(to, key, count, mats, days, note, raw, steps, deliver)
 		["until"] = now + days * DAY, stamp = now, state = "ny", note = Clean(note), at = now }
 	if mats == "e" and raw then o.raw, o.steps = raw, steps end
 	if deliver and deliver ~= me and deliver ~= to then o.deliver = deliver end
+	-- The material cost on the order (Zach 12/11), for the C.O.D.; the tip
+	-- still goes along for clients before 0.34.2.
 	if mats == "h" then
 		local cost = ReagentCost(key, count)
+		o.cost = cost or false
 		if cost then o.tip = math.floor(cost * TIP) end
 	end
 	Orders()[o.id] = o
@@ -246,6 +302,7 @@ function ns.PlaceOrder(to, key, count, mats, days, note, raw, steps, deliver)
 		SendChatMessage(string.format("@%s du har en ny arbetsorder: %s x%d! Titta under Arbetsorder i Yrken (/yrken).", to, RecipeName(key), count), "GUILD")
 	end
 	ns.Print(string.format("arbetsorder skickad till %s: %s x%d%s.", to, RecipeName(key), count, o.deliver and (", det färdiga till " .. o.deliver) or ""))
+	if mats == "h" then ns.Print("postförskott: " .. PayText(o) .. ".") end
 	-- Sending the materials (Zach 9/11): Bokföring lists what to buy.
 	-- Raw materials go on the list in all, not per craft (Zach 10/11).
 	if mats == "e" and BokforingAPI and BokforingAPI.ShopForOrder then
@@ -306,13 +363,35 @@ local function SetState(o, state, reason)
 	Changed()
 end
 
+-- Delar (Zach 14/11): turning Yrken off asks first, naming how many open
+-- orders it cancels, then closes every open order this character is part
+-- of, as Avbryt and Avböj do: as the one ordering it is cancelled
+-- (avbruten), as the crafter declined with the reason below, so the other
+-- side gets the usual line and sees it closed. No refusal, one step.
+local OFF_REASON = "Yrken avstängt"
+
+function ns.OpenOrders()
+	local me, out = ns.Me(), {}
+	for _, o in pairs(Orders()) do
+		if (o.from == me or o.to == me) and OPEN[State(o)] then table.insert(out, o) end
+	end
+	return out
+end
+
+function ns.CloseOpenOrders()
+	local me = ns.Me()
+	for _, o in ipairs(ns.OpenOrders()) do
+		if o.from == me then SetState(o, "avbruten") else SetState(o, "avböjd", OFF_REASON) end
+	end
+end
+
 -- Receiving -------------------------------------------------------------
 
 local function Tell(o, old)
 	local me = ns.Me()
 	if o.to == me and not old then
-		ns.Print(string.format("ny arbetsorder från %s: %s x%d, %s.%s Titta under Arbetsorder i Yrken.", o.from, RecipeName(o.key), o.count, MATS[o.mats] or "?",
-			o.deliver and (" Skicka det färdiga till " .. o.deliver .. ".") or ""))
+		ns.Print(string.format("ny arbetsorder från %s: %s x%d, %s.%s%s Titta under Arbetsorder i Yrken.", o.from, RecipeName(o.key), o.count, MATS[o.mats] or "?",
+			o.deliver and (" Skicka det färdiga till " .. o.deliver .. ".") or "", o.mats == "h" and (" Postförskott: " .. PayText(o) .. ".") or ""))
 	elseif o.from == me and old and old.state ~= o.state then
 		ns.Print(string.format("%s: din arbetsorder %s x%d är nu %s%s.", o.to, RecipeName(o.key), o.count, STATE[o.state]:lower(),
 			o.reason and o.reason ~= "" and (" (" .. o.reason .. ")") or ""))
@@ -336,7 +415,15 @@ function ns.OnOrder(sender, parts)
 	o.noticed = old and old.noticed
 	-- A recipient only from the guild leader's orders (Zach 11/11).
 	if parts[17] and parts[17] ~= "" and o.from == ns.Leader() then o.deliver = parts[17] end
+	-- The material cost (0.34.2) is set once, when the order is placed: keep
+	-- the first one heard, so a later message cannot change the C.O.D.
+	if old and old.cost ~= nil then o.cost = old.cost else o.cost = ParseCost(parts[18]) end
 	Orders()[o.id] = o
+	-- Yrken off (Delar): a new order to this character is declined at once.
+	if not old and o.to == ns.Me() and OPEN[State(o)] and not ns.YrkenOn() then
+		SetState(o, "avböjd", OFF_REASON)
+		return
+	end
 	Tell(o, old)
 	Changed()
 end
@@ -405,12 +492,13 @@ local function Label(parent, text, x, y)
 	return fs
 end
 
--- The tip line under "Detta löser du!": a tenth of the reagents, in money
--- where Auctionator knows the prices.
+-- The line under the crafter's choice: the C.O.D., material + 10 % (Zach
+-- 12/11), where the prices are known; without them the crafter sets it.
 local function TipText()
 	local count = tonumber(dialog.count:GetText()) or 1
 	local cost = ReagentCost(dialog.key, math.max(count, 1))
-	return cost and string.format("dricks 10 %% av reagenskostnaden, ungefär %s", ns.Money(cost * TIP)) or "dricks 10 % av reagenskostnaden"
+	if not cost then return "inget pris känt: inget postförskott, hantverkaren sätter det själv" end
+	return string.format("postförskott ungefär %s (material %s + 10 %%)", ns.Money(cost + math.floor(cost * TIP)), ns.Money(cost))
 end
 
 -- Skicka råvaror (Zach 10/11): offered when the crafter levels on making
@@ -420,11 +508,12 @@ local COLOUR_WORD = { o = "orange", y = "gul", g = "grön" }
 -- What the materials cost to buy and send (Zach 12/11), for the count
 -- typed, raw materials when those are ticked; with "Använd mina material"
 -- what is in your bags is not bought. Not when the crafter buys them: the
--- tip line says that.
+-- C.O.D. line says that, and it gives way to the raw box when you send.
 local function UpdateCost()
 	local sending = dialog.mats ~= "h"
 	dialog.ownBox:SetShown(sending)
 	dialog.cost:SetShown(sending)
+	dialog.tip:SetShown(dialog.mats ~= "e")
 	if not sending then return end
 	local count = math.max(tonumber(dialog.count:GetText()) or 1, 1)
 	local list = {}
@@ -517,9 +606,15 @@ local function BuildDialog()
 
 	Label(dialog, "Material", 24, -106)
 	dialog.own = Radio(dialog, "Jag skickar materialet", 136, -100)
-	dialog.theirs = Radio(dialog, "Detta löser du!", 136, -124)
+	-- Zach 12/11: the choice says what it costs; it wraps over three lines,
+	-- and the C.O.D. line goes under it.
+	dialog.theirs = Radio(dialog, MATS.h, 136, -124)
+	dialog.theirs.label:ClearAllPoints()
+	dialog.theirs.label:SetPoint("TOPLEFT", dialog.theirs, "TOPRIGHT", 4, -2)
+	dialog.theirs.label:SetWidth(200)
+	dialog.theirs.label:SetJustifyH("LEFT")
 	dialog.tip = dialog:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-	dialog.tip:SetPoint("TOPLEFT", 162, -146)
+	dialog.tip:SetPoint("TOPLEFT", 162, -172)
 	dialog.tip:SetWidth(200)
 	dialog.tip:SetJustifyH("LEFT")
 	dialog.own:SetScript("OnClick", function() dialog.mats = "e" dialog.own:SetChecked(true) dialog.theirs:SetChecked(false) UpdateRaw() end)
@@ -721,6 +816,53 @@ local function StillMissing(o, crafts)
 	return out
 end
 
+-- C.O.D. on the crafter's letter to the one ordering (Zach 12/11). The
+-- mail window sends what its money box holds, so the box is filled as by
+-- hand: the C.O.D. button, then the amount; SetSendMailCOD too where it
+-- exists. Unchecked on Forever, so every call is pcalled, and true only
+-- when the window shows the amount.
+local function SetCOD(amount)
+	if SendMailCODButton and not SendMailCODButton:GetChecked() then pcall(SendMailCODButton.Click, SendMailCODButton) end
+	if MoneyInputFrame_SetCopper and SendMailMoney then pcall(MoneyInputFrame_SetCopper, SendMailMoney, amount) end
+	if SetSendMailCOD then pcall(SetSendMailCOD, amount) end
+	if not (SendMailCODButton and SendMailCODButton:GetChecked() and MoneyInputFrame_GetCopper and SendMailMoney) then return false end
+	local ok, shown = pcall(MoneyInputFrame_GetCopper, SendMailMoney)
+	return ok and shown == amount
+end
+
+-- This letter's part of the C.O.D.: all of it in one letter; over several,
+-- by the crafts in each, so the parts add up to the whole. When it cannot
+-- be filled in, the amount goes to chat for the crafter to type.
+local function LetterCOD(f)
+	local o = f.order
+	if not (f.crafts and o.mats == "h" and not o.deliver) then return end
+	local cod = CODAmount(o)
+	if not cod then
+		ns.Print((o.cost == false and "inget materialpris när ordern lades" or "inget pris på materialet i dag")
+			.. ": inget postförskott ifyllt. Sätt det själv (C.O.D.) innan du trycker Send.")
+		return
+	end
+	local c = Crafts(o)[1]
+	if not c then return end
+	local attached = 0
+	for i = 1, ATTACHMENTS_MAX_SEND or 12 do
+		local _, item, _, count = GetSendMailItem(i)
+		if item == c.itemID then attached = attached + (count or 1) end
+	end
+	if attached == 0 then
+		ns.Print(string.format("inget färdigt i brevet än; postförskottet är %s i allt.", ns.Money(cod)))
+		return
+	end
+	local before = math.min(o.craftsSent or 0, c.need)
+	local amount = math.floor(cod * math.min(before + attached, c.need) / c.need) - math.floor(cod * before / c.need)
+	local part = amount < cod and (", av " .. ns.Money(cod) .. " i allt") or ""
+	if SetCOD(amount) then
+		ns.Print(string.format("postförskott %s ifyllt (material + 10 %%%s).", ns.Money(amount), part))
+	else
+		ns.Print(string.format("kunde inte fylla i postförskottet: välj C.O.D. och skriv %s (material + 10 %%%s) innan du trycker Send.", ns.Money(amount), part))
+	end
+end
+
 local function FillStep()
 	local f = filling
 	if not f then return end
@@ -737,12 +879,14 @@ local function FillStep()
 		if #short > 0 then
 			ns.Print("finns inte i väskorna: " .. table.concat(short, ", ") .. ". Köp dem och tryck Fyll i brev igen.")
 		end
+		LetterCOD(f)
 		ns.Print("brevet till " .. f.to .. " är ifyllt. Kontrollera det och tryck Send." .. (f.crafts and " Ordern blir Klar när allt det färdiga har gått iväg." or ""))
 		return
 	end
 	local free = FreeAttachment()
 	if not free then
 		filling = nil
+		LetterCOD(f)
 		ns.Print("brevet är fullt (" .. (ATTACHMENTS_MAX_SEND or 12) .. " saker). Tryck Send och sedan Fyll i brev igen för nästa brev.")
 		return
 	end
@@ -772,7 +916,9 @@ local function MailBody()
 end
 
 -- crafts: the crafter sends the finished crafts to the recipient the
--- guild leader named (Zach 11/11), instead of the orderer sending materials.
+-- guild leader named (Zach 11/11), instead of the orderer sending materials;
+-- or to the one ordering, with the C.O.D., when the crafter bought the
+-- materials (Zach 12/11).
 local function FillMail(o, crafts)
 	if not (MailFrame and MailFrame:IsShown()) then
 		ns.Print("gå till en brevlåda, öppna arbetsordern och tryck Fyll i brev.")
@@ -785,13 +931,15 @@ local function FillMail(o, crafts)
 		return
 	end
 	if MailFrameTab_OnClick then MailFrameTab_OnClick(nil, 2) end
-	local to = crafts and o.deliver or o.to
+	local to = crafts and CraftsTo(o) or o.to
 	SendMailNameEditBox:SetText(to)
 	if SendMailSubjectEditBox then SendMailSubjectEditBox:SetText(string.format("Arbetsorder: %s x%d", RecipeName(o.key), o.count)) end
 	-- In the materials letter too (Zach 11/11), so the crafter sees it there.
 	local body = MailBody()
 	if body then
-		if crafts then body:SetText(string.format("Från %s:s arbetsorder.", o.from))
+		if crafts and not o.deliver and o.mats == "h" then body:SetText("Din arbetsorder. Postförskottet är materialet + 10 %.")
+		elseif crafts and not o.deliver then body:SetText("Din arbetsorder.")
+		elseif crafts then body:SetText(string.format("Från %s:s arbetsorder.", o.from))
 		elseif o.deliver then body:SetText("yoyoyo! skicka allt till " .. o.deliver .. " sen :)") end
 	end
 	filling = { order = o, lacking = {}, crafts = crafts, to = to }
@@ -940,7 +1088,8 @@ ShowOrder = function(o)
 	if o.deliver then table.insert(lines, "|cffffd100Skicka färdiga till:|r |cff40ff40" .. o.deliver .. "|r") end
 	local status = SentStatus(o)
 	if status then table.insert(lines, "|cffffd100Skickat:|r " .. status) end
-	if o.tip then table.insert(lines, "|cffffd100Dricks:|r ungefär " .. ns.Money(o.tip)) end
+	local pay = PayText(o)
+	if pay then table.insert(lines, "|cffffd100Postförskott:|r " .. pay) end
 	table.insert(lines, "|cffffd100Väntar till:|r " .. date("%d/%m %H:%M", o["until"]))
 	-- One line a reagent (Zach 10/11: names showed as "..." while loading;
 	-- the view is drawn again when they arrive), and what has been sent.
@@ -992,8 +1141,11 @@ ShowOrder = function(o)
 		ViewButton(view.a, nil)
 		ViewButton(view.b, nil)
 	end
-	-- The crafter's letter of finished crafts to the recipient (Zach 11/11).
-	ViewButton(view.c, (incoming and state == "accepterad" and o.deliver) and "Fyll i brev" or nil, function() FillMail(o, true) end)
+	-- The crafter's letter of finished crafts to the recipient (Zach 11/11),
+	-- and to the one ordering when the crafter bought the materials, with
+	-- the C.O.D. (Zach 12/11); to the one ordering also when they sent the
+	-- materials, without C.O.D. (Zach 14/11).
+	ViewButton(view.c, (incoming and state == "accepterad") and "Fyll i brev" or nil, function() FillMail(o, true) end)
 	view:Show()
 end
 ns.ShowOrder = function(o) ShowOrder(o) end
@@ -1066,9 +1218,10 @@ if SendMail then
 		end
 		local prefer = filledFor and Matches(target, filledFor.to) and filledFor or nil
 		pendingMail = next(items) and { to = target, items = items, prefer = prefer } or nil
-		-- The crafter's letter of finished crafts to the recipient.
+		-- The crafter's letter of finished crafts to the recipient, or to
+		-- the one ordering (Zach 12/11).
 		local o = craftsFor
-		if pendingMail and o and o.deliver and Matches(target, o.deliver) then pendingMail.crafts = o end
+		if pendingMail and o and Matches(target, CraftsTo(o)) then pendingMail.crafts = o end
 	end)
 end
 
@@ -1104,10 +1257,10 @@ tracker:SetScript("OnEvent", function(_, event, a, b)
 			if o.craftsSent >= c.need then
 				SetState(o, "klar")
 				craftsFor = nil
-				ns.Print(string.format("allt det färdiga har gått till %s; arbetsordern %s x%d är Klar.", o.deliver, RecipeName(o.key), o.count))
+				ns.Print(string.format("allt det färdiga har gått till %s; arbetsordern %s x%d är Klar.", CraftsTo(o), RecipeName(o.key), o.count))
 				if ns.RefreshOrderView then ns.RefreshOrderView(o) end
 			else
-				ns.Print(string.format("%d av %d skickade till %s; fyll i nästa brev.", o.craftsSent, c.need, o.deliver))
+				ns.Print(string.format("%d av %d skickade till %s; fyll i nästa brev.", o.craftsSent, c.need, CraftsTo(o)))
 			end
 		end
 		pendingMail = nil
@@ -1282,7 +1435,8 @@ function ns.BuildOrders(parent)
 			GameTooltip:AddLine(string.format("%s x%d", RecipeName(o.key), o.count))
 			GameTooltip:AddLine(string.format("Från %s till %s", o.from, o.to), 1, 1, 1)
 			GameTooltip:AddLine(MATS[o.mats] or "?", 1, 1, 1)
-			if o.tip then GameTooltip:AddLine("Dricks: ungefär " .. ns.Money(o.tip), 1, 0.82, 0) end
+			local pay = PayText(o)
+			if pay then GameTooltip:AddLine("Postförskott: " .. pay, 1, 0.82, 0, true) end
 			GameTooltip:AddLine("Väntar till " .. date("%d/%m %H:%M", o["until"]), 1, 1, 1)
 			if o.note and o.note ~= "" then GameTooltip:AddLine("Anteckning: " .. o.note, 1, 1, 1, true) end
 			GameTooltip:AddLine("Status: " .. STATE[State(o)] .. (o.reason and (" (" .. o.reason .. ")") or ""), 1, 0.82, 0)
@@ -1424,6 +1578,7 @@ events:SetScript("OnEvent", function()
 	C_Timer.After(45, function()
 		if not ns.db or not ns.InOurGuild() then return end
 		Prune()
+		if not ns.YrkenOn() then Changed() return end
 		ns.Send("X")
 		Changed()
 	end)

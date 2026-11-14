@@ -144,22 +144,29 @@ local function MoneyChanged()
 		local p = pending
 		pending = nil
 		Spend(p.item, p.count, spent)
+		-- Into stock at what it cost (0.7), once the item arrives.
+		if ns.StockBought then ns.StockBought(p.item, p.count, spent) end
 	end
 end
 
 local lastSearched
 -- An auction he puts up, by hand or through Auctionator (Zach 10/11): the
 -- item and how many, read from the bag slot as it goes up.
-local function Posted(location, quantity)
+-- The deposit is noted on it for stock at cost (0.7).
+local function Posted(location, quantity, duration)
 	if not (location and C_Item and C_Item.GetItemID) then return end
 	local ok, item = pcall(C_Item.GetItemID, location)
-	if ok and item then table.insert(Data().posts, { at = time(), item = item, qty = quantity or 1 }) end
+	if ok and item then
+		local post = { at = time(), item = item, qty = quantity or 1 }
+		table.insert(Data().posts, post)
+		if ns.StockPosted then ns.StockPosted(post, location, duration) end
+	end
 end
 
 local function Hooks()
 	local ah = C_AuctionHouse
-	if ah and ah.PostCommodity then hooksecurefunc(ah, "PostCommodity", function(location, _, quantity) Posted(location, quantity) end) end
-	if ah and ah.PostItem then hooksecurefunc(ah, "PostItem", function(location, _, quantity) Posted(location, quantity) end) end
+	if ah and ah.PostCommodity then hooksecurefunc(ah, "PostCommodity", function(location, duration, quantity) Posted(location, quantity, duration) end) end
+	if ah and ah.PostItem then hooksecurefunc(ah, "PostItem", function(location, duration, quantity) Posted(location, quantity, duration) end) end
 	if ah and ah.ConfirmCommoditiesPurchase then
 		hooksecurefunc(ah, "ConfirmCommoditiesPurchase", function(item, quantity) Expect(item, quantity) end)
 	end
@@ -238,7 +245,11 @@ local function Crafted(id)
 	if not r or not r.item then return end
 	Timed(id)
 	local e = Expected(id, r.profession)
-	table.insert(Data().crafts, { at = time(), recipe = id, item = r.item, qty = r.qty or 1, cost = e and e.cost, sells = e and e.sells, taxed = true })
+	-- paid: what the reagents cost from stock (0.7); cost stays what
+	-- Bokföring expected at market prices.
+	local paid = ns.StockCraft and ns.StockCraft(id, r)
+	table.insert(Data().crafts, { at = time(), recipe = id, item = r.item, qty = r.qty or 1, cost = e and e.cost, sells = e and e.sells, taxed = true,
+		paid = paid and math.floor(paid + 0.5) or nil })
 	ns.lastCraft = string.format("%s, %s", r.name or ns.ItemName(r.item), date("%H:%M"))
 	ns.CleanLists()
 	if ns.Refresh then ns.Refresh() end
@@ -336,6 +347,16 @@ local function Totals()
 			end
 		end
 	end
+	-- Realised (0.7): sales and vendor sales less what the units cost from
+	-- stock, any item, not only his crafts.
+	if ns.Realised then
+		for item, r in pairs(ns.Realised(since)) do
+			local it = Item(ns.ItemName(item))
+			it.item = it.item or item
+			it.realised, it.realisedUnk = r.profit, r.unk
+		end
+		for item, r in pairs(ns.Realised(time() - 7 * 86400)) do Item(ns.ItemName(item)).realised7 = r.profit end
+	end
 	for _, it in pairs(items) do
 		if it.expectedN > 0 then it.expectedEach = it.expected / it.expectedN end
 		it.onAH = math.max(0, it.posted - it.sold - it.returned)
@@ -374,11 +395,14 @@ local function Totals()
 	for _, it in pairs(items) do
 		local costEach = it.crafted > 0 and it.spent / it.crafted
 		it.net = it.income - (costEach and costEach * math.min(it.sold, it.crafted) or it.spent)
+		-- Realised profit from stock at cost where there is any (0.7).
+		if it.realised then it.net, it.real = it.realised, true end
 		if it.sold > 0 then it.realEach = it.income / it.sold end
 		if it.item then
 			it.held = ns.Have(it.item) + it.onAH
 			local price = ns.AH(it.item)
 			it.stock = it.held * (price and ns.Keep(price) or it.expectedEach or 0)
+			it.atCost = ns.StockCost and ns.StockCost(it.item)
 		end
 		table.insert(list, it)
 	end
@@ -524,7 +548,15 @@ local function Build(frame)
 			GameTooltip:AddLine("Income: sold mails of this item after you crafted it, without the deposit and less the guild tax.", 1, 1, 1, true)
 			GameTooltip:AddLine("Expected each: the auction house price less the cut and guild tax when you crafted; real each: what it sold for after tax.", 1, 1, 1, true)
 			GameTooltip:AddLine("Posted: put up on the auction house since you started crafting it, by hand or with Auctionator. On AH: posted, less sold and less what came back expired or cancelled.", 1, 1, 1, true)
-			GameTooltip:AddLine("Net: income less what the sold ones cost (spent / crafted for each). Stock: what you hold in bags, bank and on the AH, at today's price after cut and tax.", 1, 1, 1, true)
+			GameTooltip:AddLine("Net: realised profit, the sales after cut, deposit and guild tax less what those units cost you from stock (white); before stock at cost, income less spent / crafted for each (grey). Stock: what you hold in bags, bank and on the AH, at today's price after cut and tax.", 1, 1, 1, true)
+			if it.real then
+				GameTooltip:AddDoubleLine("Realised, last 7 days", ns.Money(it.realised7 or 0), 1, 1, 1, 1, 1, 1)
+				GameTooltip:AddDoubleLine(string.format("Realised, last %d days", KEEP / 86400), ns.Money(it.realised), 1, 1, 1, 1, 1, 1)
+				if it.realisedUnk and it.realisedUnk >= 0.5 then
+					GameTooltip:AddLine(string.format("%d sold with no cost recorded, counted at the AH price.", math.floor(it.realisedUnk + 0.5)), 0.6, 0.6, 0.6, true)
+				end
+			end
+			if it.atCost then GameTooltip:AddDoubleLine("Your cost each, from stock", ns.Money(it.atCost), 1, 1, 1, 1, 1, 1) end
 			if it.held then GameTooltip:AddLine(string.format("You hold %d.", it.held), 0.6, 0.6, 0.6, true) end
 			if it.crafted > it.sold then
 				GameTooltip:AddLine(string.format("%d crafted not sold yet (or the sold mail not read yet).", it.crafted - it.sold), 0.6, 0.6, 0.6, true)
@@ -643,7 +675,8 @@ function ns.RefreshHistory(frame)
 			row.cells[5]:SetText(it.onAH)
 			row.cells[6]:SetText(Money(it.spent))
 			row.cells[7]:SetText(Money(it.income))
-			row.cells[8]:SetText(Money(it.net, it.net < 0))
+			-- Grey: the old estimate, no realised records for it yet.
+			row.cells[8]:SetText(it.real and Money(it.net, it.net < 0) or ("|cff808080" .. ns.Money(it.net) .. "|r"))
 			row.cells[9]:SetText(Money(it.stock))
 			row.cells[10]:SetText(Money(it.expectedEach))
 			-- Red when it sold for over 5% less than promised (Zach 11/11: 1% under is noise).
@@ -658,37 +691,41 @@ function ns.RefreshHistory(frame)
 	local potential = income + stock - spent
 	view.potential:SetText(#list > 0 and string.format("Potential: %s%s|r", potential < 0 and "|cffff4040-" or "|cff40ff40+", ns.Money(math.abs(potential))) or "")
 	frame.status:SetText(string.format("%d items", #list))
-	frame.note:SetText(#list == 0 and "Nothing yet: craft one of your recipes, or buy reagents through a Bokföring list (right-click a recipe)."
-		or string.format("Last %d days: income %s, spent %s. In stock: %d, worth about %s at today's price. Potential: income + stock - spent. Spent: buys through Bokföring lists only.",
-			DAYS, ns.Money(income), ns.Money(spent), held, ns.Money(stock)))
+	-- Realised profit per period, unsold stock at cost against today's
+	-- value, and levelling apart (0.7, Zach 14/11).
+	if ns.Realised and ns.StockValue then
+		local _, week = ns.Realised(time() - 7 * 86400)
+		local _, month, level = ns.Realised(time() - DAYS * 86400)
+		local atCost, value, units = ns.StockValue()
+		frame.note:SetText(string.format("Realised profit: 7 days %s, %d days %s. Unsold stock (%d): cost %s, worth %s today. Levelling: %s for %d points.",
+			ns.Money(week.profit), DAYS, ns.Money(month.profit), math.floor(units + 0.5), ns.Money(atCost), ns.Money(value), ns.Money(level.cost), level.points))
+	else
+		frame.note:SetText(#list == 0 and "Nothing yet: craft one of your recipes, or buy reagents through a Bokföring list (right-click a recipe)."
+			or string.format("Last %d days: income %s, spent %s. In stock: %d, worth about %s at today's price. Potential: income + stock - spent. Spent: buys through Bokföring lists only.",
+				DAYS, ns.Money(income), ns.Money(spent), held, ns.Money(stock)))
+	end
 end
 
 -- The item tooltip (Zach 11/11: at the auction house, what a sale makes
--- now against what it cost to craft). Cost: the newest crafts that cover
--- what he holds, so the stock in his bags; at least the latest craft.
+-- now against what it cost). Your cost (0.7, Zach 14/11): the average of
+-- what the units in stock cost him (Stock.lua); "Cost each" was the
+-- reagents' market value at the craft, not what he paid, and confused.
 -- Break-even: the price where the cut and the guild tax leave the cost.
-local function CostEach(item)
-	local crafts = Data().crafts
-	local held = math.max(1, ns.Have(item))
-	local n, cost = 0, 0
-	for i = #crafts, 1, -1 do
-		local c = crafts[i]
-		if c.item == item and c.cost and n < held then
-			local take = math.min(c.qty or 1, held - n)
-			n, cost = n + take, cost + c.cost / (c.qty or 1) * take
-		end
-	end
-	if n > 0 then return cost / n end
-end
-
+local MARKS = { { "o", "opening balance" }, { "r", "received" }, { "u", "unknown" } }
 local function AddTooltip(tooltip, item)
-	if not item or not ns.db or (ns.Allowed and not ns.Allowed()) then return end
-	local cost = CostEach(item)
+	if not item or not ns.db or (ns.Allowed and not ns.Allowed()) or not ns.StockCost then return end
+	local cost, n, s = ns.StockCost(item)
 	if not cost then return end
 	local tax = ns.TaxRate()
 	local cuts = tax > 0 and string.format("5%% AH, %g%% guild tax", tax * 100) or "5% AH"
 	tooltip:AddLine("Bokföring")
-	tooltip:AddDoubleLine("Cost each", ns.Money(cost), 1, 1, 1, 1, 1, 1)
+	tooltip:AddDoubleLine(string.format("Your cost (%d in stock)", math.floor(n + 0.5)), ns.Money(cost), 1, 1, 1, 1, 1, 1)
+	-- Units priced at the AH price instead of what was paid.
+	local marked = {}
+	for _, m in ipairs(MARKS) do
+		if s[m[1]] and s[m[1]] >= 0.5 then table.insert(marked, string.format("%d %s", math.floor(s[m[1]] + 0.5), m[2])) end
+	end
+	if #marked > 0 then tooltip:AddLine("At the AH price of their day: " .. table.concat(marked, ", "), 0.6, 0.6, 0.6, true) end
 	local price = ns.AH(item)
 	if price then
 		local keep = ns.Keep(price)
@@ -754,7 +791,10 @@ events:SetScript("OnEvent", function(_, event, unit, _, spell)
 	elseif unit ~= "player" then
 		return
 	elseif event == "UNIT_SPELLCAST_START" then
-		if ns.db.recipes[spell] then started[spell] = GetTime() end
+		if ns.db.recipes[spell] then
+			started[spell] = GetTime()
+			if ns.StockCraftStart then ns.StockCraftStart(ns.db.recipes[spell]) end
+		end
 	else
 		Crafted(spell)
 	end
@@ -788,7 +828,10 @@ StaticPopupDialogs.BOKFORING_RESET = {
 			if c.item then db.tracked[c.item] = true end
 		end
 		db.crafts, db.plans, db.spends, db.posts, db.sales, db.returns = {}, {}, {}, {}, {}, {}
-		ns.Print("history erased; it starts again from now.")
+		-- The realised records go too; the stock and its costs stay, they
+		-- are what he holds (0.7).
+		db.ledger = {}
+		ns.Print("history erased; it starts again from now. Your stock keeps its costs.")
 		if ns.Refresh then ns.Refresh() end
 	end,
 }

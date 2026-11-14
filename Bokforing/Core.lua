@@ -18,6 +18,27 @@ local _, ns = ...
 local CALLER = "Bokforing"
 ns.CUT = 0.05
 
+-- Saved data's shape (0.7, Zach 14/11: saved data must survive): raised
+-- with every change, and Migrate() gets a step. Nothing is ever dropped.
+ns.SCHEMA = 1
+local function Migrate(db)
+	local from = db.schema or 0
+	if from < 1 then
+		-- 0.7, stock at cost (Stock.lua): new tables only; the history so far
+		-- stays as it was. What he holds is valued at the next login as the
+		-- opening balance.
+		db.stock = db.stock or {}
+		db.held = db.held or {}
+		db.mailHeld = db.mailHeld or {}
+		db.transit = db.transit or {}
+		db.ledger = db.ledger or {}
+		db.buys = db.buys or {}
+		db.chars = db.chars or {}
+		db.listed = db.listed or {}
+	end
+	db.schema = ns.SCHEMA
+end
+
 -- Skatteverket's guild tax on income, 0 without it or outside the guild.
 function ns.TaxRate()
 	local api = SkatteverketAPI
@@ -804,6 +825,8 @@ local function Count(total, info, summary)
 	if not next(counts) then return end
 	if ns.RecordMarket then ns.RecordMarket(counts) end
 	if ns.RecordHours then ns.RecordHours(counts) end
+	-- Today's vendor flips (0.6.6): one scan is enough.
+	if ns.RecordVendorFlips then ns.RecordVendorFlips(counts) end
 	local now = time()
 	local kind = summary and "summary" or "auctions"
 	local last = ns.db.snapshot
@@ -999,6 +1022,7 @@ events:SetScript("OnEvent", function(_, event, name)
 		ns.db.catalog = ns.db.catalog or {}
 		ns.db.turnover = ns.db.turnover or {}
 		ns.db.market = ns.db.market or {}
+		Migrate(ns.db)
 	elseif not ns.db or (ns.Allowed and not ns.Allowed()) then
 		return
 	elseif event:match("^AUCTION") or event == "REPLICATE_ITEM_LIST_UPDATE" then
@@ -1105,6 +1129,7 @@ SlashCmdList.BOKFORING = function(msg)
 		ns.Print("Sold notice copy: " .. ns.NoticeTest() .. ".")
 		ns.Print("Saved data: " .. ns.SizeTest() .. ".")
 		ns.Print("Recipes to learn: " .. ns.LearnTest() .. ".")
+		ns.Print("Stock at cost: " .. ns.StockTest() .. ".")
 		local profiles, ready = 0, 0
 		for item in pairs(ns.db.hours or {}) do
 			profiles = profiles + 1

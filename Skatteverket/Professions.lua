@@ -170,6 +170,16 @@ end
 -- Signed members get the guild rank Medborgare (Zach 7/11); the leader
 -- gives it, Skatteverket only shows who is still waiting for it.
 ns.CITIZEN_RANK = "Medborgare"
+-- Ranks that count as Medborgare wherever they sit in the guild's order:
+-- the officers in Representant (Zach 12/11).
+ns.EQUAL_RANKS = { Representant = true }
+
+-- Whether a roster rank index counts as Medborgare or higher.
+function ns.RankOk(rankIndex, citizen)
+	if rankIndex <= citizen then return true end
+	local name = GuildControlGetRankName and GuildControlGetRankName(rankIndex + 1)
+	return name ~= nil and ns.EQUAL_RANKS[name] == true
+end
 
 -- The roster rank index of Medborgare (0 is the guild master), or nil
 -- when the guild has no rank by that name.
@@ -197,7 +207,7 @@ function ns.CitizenStatus(name, ranks, citizen)
 	if not m or not m.number then return nil end
 	if not citizen then return "norank" end
 	local rank = ranks[name]
-	if rank and rank > citizen then return "promote" end
+	if rank and not ns.RankOk(rank, citizen) then return "promote" end
 	return "ok"
 end
 
