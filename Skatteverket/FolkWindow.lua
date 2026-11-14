@@ -194,6 +194,7 @@ local function ShowBallot(b)
 	detail.y = 0
 	if not ns.BallotComplete(b) then
 		DetailRow("Hämtar kandidaterna…", "", nil)
+		ns.AskBallot(b)
 		return
 	end
 	local mine = ns.Folk().myVotes

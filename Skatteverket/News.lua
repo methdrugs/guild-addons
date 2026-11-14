@@ -12,6 +12,9 @@ local _, ns = ...
 -- enough, "restart" when the release adds files the game only reads at
 -- start; shown in red under the version.
 ns.NOTES = {
+	{ "0.34.3", "2026-11-14", after = "reload", {
+		"Folkvald representant: fastnar en omröstning på Hämtar kandidaterna… frågar addonet guildledaren igen efter just den omröstningen, tills alla kandidater kommit. Guildledaren skickar också lugnare, så att inget tappas på vägen.",
+	} },
 	{ "0.34.2", "2026-11-14", after = "restart", {
 		"Skickat: i brevlådan finns en ny flik, Skickat, med allt du skickat från alla dina karaktärer de senaste 30 dagarna: till vem, ämne, saker, guld och postförskott. Sök på namn, ämne eller sak. Listan finns bara hos dig.",
 		"Huvudkaraktär: ett konto har en huvudkaraktär. Bockar du i Huvudkaraktär på en karaktär blir de andra alts; på huvudkaraktären går Alt inte att välja förrän du valt en annan.",

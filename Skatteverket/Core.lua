@@ -46,7 +46,7 @@
 local _, ns = ...
 
 ns.GUILD = "THÖNDERSTÖRM"
-ns.VERSION = "0.34.2"
+ns.VERSION = "0.34.3"
 -- The parts inside Skatteverket with their own number (Zach 12/11), raised
 -- only when that part changes; shown under THÖNDERSTÖRM in Nytt. The
 -- release's notes name it: "Yrken 0.4: ...".
@@ -166,13 +166,24 @@ function ns.Online(who)
 	end
 end
 
+-- Whether the game held a message back for coming too fast (Zach 14/11:
+-- a ballot lost its candidates in the leader's burst). The result codes
+-- are retail's; an older client returns nothing, which counts as sent.
+local function Throttled(result)
+	local codes = Enum and Enum.SendAddonMessageResult
+	if type(result) ~= "number" or not codes then return false end
+	return result == codes.AddonMessageThrottle or result == codes.ChannelThrottle
+end
+
+-- False only when the game held the message back; send it again later.
 function ns.Send(msg)
-	if not IsInGuild() then return end
+	if not IsInGuild() then return true end
 	if C_ChatInfo and C_ChatInfo.SendAddonMessage then
-		C_ChatInfo.SendAddonMessage(ns.PREFIX, msg, "GUILD")
+		return not Throttled(C_ChatInfo.SendAddonMessage(ns.PREFIX, msg, "GUILD"))
 	elseif SendAddonMessage then
 		SendAddonMessage(ns.PREFIX, msg, "GUILD")
 	end
+	return true
 end
 
 -- Names in the guild right now as a set, or nil before the roster loads.
@@ -225,7 +236,8 @@ function ns.SendTo(target, msg)
 	end
 	if not ns.Online(target) then return false end
 	if C_ChatInfo and C_ChatInfo.SendAddonMessage then
-		C_ChatInfo.SendAddonMessage(ns.PREFIX, msg, "WHISPER", target)
+		-- Second value: held back, send it again later.
+		if Throttled(C_ChatInfo.SendAddonMessage(ns.PREFIX, msg, "WHISPER", target)) then return false, true end
 	elseif SendAddonMessage then
 		SendAddonMessage(ns.PREFIX, msg, "WHISPER", target)
 	end

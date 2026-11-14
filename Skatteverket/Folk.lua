@@ -29,6 +29,8 @@
 --                                    account's main first, accounts with alts only
 -- Guild channel, from anyone:
 --   FQ                               ask the leader for all of the above
+--   (FQ;id by whisper to the leader asks for one ballot, which comes back
+--   as FB, FC and FT by whisper; Zach 14/11)
 -- Whispers to the leader:
 --   FA;role;challenge;target;i;n;title~reason   an application, in pieces
 --   FV;key;choice;time               a vote; key is the ballot id, or id/name for yes/no
@@ -182,14 +184,23 @@ end
 
 -- Sending ---------------------------------------------------------------
 
--- One message every quarter second, so a burst never trips the client's
--- limit (rules: low traffic, spaced chunks).
+-- One message a second (Zach 14/11: at four a second the game dropped
+-- most of the leader's answer, the client allowing about ten at once and
+-- then one a second), and one the game held back goes again after a pause
+-- (rules: low traffic, spaced chunks).
+local GAP = 1
 local queue, draining = {}, false
 local function Drain()
-	local m = table.remove(queue, 1)
+	local m = queue[1]
 	if not m then draining = false return end
-	if m.to then ns.SendTo(m.to, m.msg) else ns.Send(m.msg) end
-	C_Timer.After(0.25, Drain)
+	local held
+	if m.to then
+		held = select(2, ns.SendTo(m.to, m.msg))
+	else
+		held = not ns.Send(m.msg)
+	end
+	if not held then table.remove(queue, 1) end
+	C_Timer.After(held and 2 * GAP or GAP, Drain)
 end
 
 local function Queue(msg, to)
@@ -457,6 +468,19 @@ local function Complete(b)
 end
 ns.BallotComplete = Complete
 
+-- Member: a ballot with candidates missing (Zach 14/11: a member saw only
+-- "Hämtar kandidaterna…" and could not vote) is asked for again from the
+-- leader, by whisper, at most every 30 seconds per ballot.
+local askedAt = {}
+function ns.AskBallot(b)
+	if IsGuildLeader() or Complete(b) then return end
+	local leader, online = ns.Leader()
+	if not leader or not online then return end
+	if GetTime() - (askedAt[b.id] or -999) < 30 then return end
+	askedAt[b.id] = GetTime()
+	Queue("FQ;" .. b.id, leader)
+end
+
 -- Keys a voter votes on: the ballot, or each candidate on a yes/no ballot.
 function ns.VoteKeys(b)
 	if b.kind == "P" then return { b.id } end
@@ -484,19 +508,31 @@ local function BroadcastHolders(role)
 	ns.Send(string.format("FS;%d;%s;%s", f.holderStamp[role] or 0, role, table.concat(Holders(role), ",")))
 end
 
-local function BroadcastBallot(id)
+-- To the guild, or by whisper to one member who asked for it (to).
+local function BroadcastBallot(id, to)
 	local b = F().ballots[id]
 	if not b then return end
-	Queue(string.format("FB;%s;%s;%s;%d;%s;%d", id, b.role, b.kind, b.ends, b.holder or "", #b.order))
+	Queue(string.format("FB;%s;%s;%s;%d;%s;%d", id, b.role, b.kind, b.ends, b.holder or "", #b.order), to)
 	for _, name in ipairs(b.order) do
 		local c = b.cands[name]
-		SendLong("FC", id .. ";" .. name, (c.title or "") .. "~" .. (c.reason or ""))
+		SendLong("FC", id .. ";" .. name, (c.title or "") .. "~" .. (c.reason or ""), to)
 	end
 	if b.result then
 		local counts = {}
 		for name, v in pairs(b.result.counts) do counts[#counts + 1] = name .. "=" .. v end
-		Queue(string.format("FT;%s;%s;%s", id, table.concat(b.result.winners, ","), table.concat(counts, ",")))
+		Queue(string.format("FT;%s;%s;%s", id, table.concat(b.result.winners, ","), table.concat(counts, ",")), to)
 	end
+end
+
+-- Leader: a member whose ballot has candidates missing gets that ballot
+-- alone, by whisper, at most every 30 seconds.
+local answeredAt = {}
+local function OnAskBallot(sender, id)
+	if not id or not F().ballots[id] then return end
+	local key = sender .. ";" .. id
+	if GetTime() - (answeredAt[key] or -999) < 30 then return end
+	answeredAt[key] = GetTime()
+	BroadcastBallot(id, sender)
 end
 
 -- Everything, for a member who asks (at most once a minute).
@@ -1009,6 +1045,7 @@ function ns.OnFolk(sender, parts, whisper)
 			elseif kind == "FG" and ns.OnBidragAsk then ns.OnBidragAsk(sender, parts)
 			elseif kind == "FX" then OnResign(sender, parts)
 			elseif kind == "FU" then OnWithdraw(sender, parts)
+			elseif kind == "FQ" then OnAskBallot(sender, parts[2])
 			end
 		end
 		if fromLeader then
@@ -1022,6 +1059,10 @@ function ns.OnFolk(sender, parts, whisper)
 				Warn(text)
 				ns.AddNotice(text, 11)
 			elseif kind == "FH" and ns.OnBidragGiven then ns.OnBidragGiven(parts)
+			-- A ballot asked for again (ns.AskBallot).
+			elseif kind == "FB" then OnBallot(parts)
+			elseif kind == "FC" then Receive(sender, parts, OnCandidate)
+			elseif kind == "FT" then OnResult(parts)
 			end
 		end
 		return
@@ -1067,6 +1108,10 @@ events:SetScript("OnEvent", function(_, event)
 		C_Timer.NewTicker(15, function()
 			if not ns.InOurGuild() then return end
 			if IsGuildLeader() then MakeRound() end
+			-- Open ballots still missing candidates.
+			for _, b in pairs(F().ballots) do
+				if ns.Now() < b.ends then ns.AskBallot(b) end
+			end
 			ns.RefreshTodo()
 		end)
 	else
