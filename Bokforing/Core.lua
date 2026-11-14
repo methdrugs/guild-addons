@@ -216,6 +216,26 @@ function ns.Have(item)
 	return GetItemCount and GetItemCount(item, true) or 0
 end
 
+-- Copies in the bags the auction house will take: not soulbound (Zach
+-- 14/11: Today offered to post the Goblin Rocket Helmet bound to him).
+-- The bank is left out, it cannot be looked at from here.
+function ns.Sellable(item)
+	local slots = (C_Container and C_Container.GetContainerNumSlots) or GetContainerNumSlots
+	local itemAt = (C_Container and C_Container.GetContainerItemID) or GetContainerItemID
+	local info = C_Container and C_Container.GetContainerItemInfo
+	if not slots or not itemAt then return 0 end
+	local n = 0
+	for bag = 0, (NUM_TOTAL_EQUIPPED_BAG_SLOTS or NUM_BAG_SLOTS or 4) do
+		for slot = 1, slots(bag) or 0 do
+			if itemAt(bag, slot) == item then
+				local i = info and info(bag, slot)
+				if not (i and i.isBound) then n = n + (i and i.stackCount or 1) end
+			end
+		end
+	end
+	return n
+end
+
 local function ReadMerchant()
 	if not GetMerchantNumItems then return end
 	for i = 1, GetMerchantNumItems() do

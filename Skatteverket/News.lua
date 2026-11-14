@@ -14,6 +14,8 @@ local _, ns = ...
 ns.NOTES = {
 	{ "0.34.3", "2026-11-14", after = "reload", {
 		"Folkvald representant: fastnar en omröstning på Hämtar kandidaterna… frågar addonet guildledaren igen efter just den omröstningen, tills alla kandidater kommit. Guildledaren skickar också lugnare, så att inget tappas på vägen.",
+		"Kontakta oss!: svar och avslutade ärenden som skickades medan du var offline kommer nu fram. När du loggar in hämtas dina ärenden igen, och har något hänt syns ett ! vid minimapknappen.",
+		"Bokföring 0.7.1: Today föreslår inte längre att du lägger ut saker som är bundna till dig, och räknar inte med dem när den föreslår hur många du ska tillverka.",
 	} },
 	{ "0.34.2", "2026-11-14", after = "restart", {
 		"Skickat: i brevlådan finns en ny flik, Skickat, med allt du skickat från alla dina karaktärer de senaste 30 dagarna: till vem, ämne, saker, guld och postförskott. Sök på namn, ämne eller sak. Listan finns bara hos dig.",

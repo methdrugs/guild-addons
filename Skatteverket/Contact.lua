@@ -20,6 +20,8 @@
 --   FY;id;i;n;text                       a reply
 --   FZ;id                                close it
 --   FP;id                                open it again
+--   FL                                   send me my tickets again (at login,
+--                                        Zach 14/11: a reply could be lost)
 -- Whispers from the leader, kept on his client until they are online:
 --   FE;id;num;cat;service;kind;from;at;status;closedBy;closedAt;count   the ticket
 --   FJ;id;idx;by;at;i;n;text             one message of its thread
@@ -189,9 +191,24 @@ function ns.TicketsHandover(role, old, new)
 	end
 end
 
+-- A member's tickets again, at most once a minute: those they sent (any of
+-- their characters) or handle, open or closed in the last 30 days.
+local resentAt = {}
+local function LeaderResend(sender)
+	if GetTime() - (resentAt[sender] or -999) < 60 then return end
+	resentAt[sender] = GetTime()
+	local acc, since = ns.Account(sender), ns.Now() - HISTORY
+	for _, t in pairs(Hub().list) do
+		local theirs = t.from == sender or (acc and acc == ns.Account(t.from)) or Has(Handlers(t.cat), sender)
+		if theirs and (t.status == "open" or (t.closedAt or 0) >= since) then Push(t, sender) end
+	end
+end
+
 function ns.OnTicketToLeader(sender, parts)
 	local kind = parts[1]
-	if kind == "FK" then
+	if kind == "FL" then
+		LeaderResend(sender)
+	elseif kind == "FK" then
 		ns.ReceiveLong(sender, parts, function(head, text) LeaderNew(sender, head[1], head[2], head[3], head[4], text) end)
 	elseif kind == "FY" then
 		ns.ReceiveLong(sender, parts, function(head, text) LeaderReply(sender, head[1], text) end)
@@ -243,6 +260,9 @@ local function OnMessage(head, text)
 	for k, m in ipairs(t.msgs) do
 		if k ~= idx and m.by == by and m.text == text then table.remove(t.msgs, k) break end
 	end
+	-- Sent again at login (FL): only what is new counts as unread.
+	local old = t.msgs[idx]
+	if old and old.by == by and old.text == text then return end
 	t.msgs[idx] = { by = by, at = at or ns.Now(), text = text }
 	if by ~= ns.Me() then t.unread = true end
 	Changed()
@@ -259,6 +279,15 @@ function ns.OnTicketFromLeader(parts)
 		return false
 	end
 	return true
+end
+
+-- Member: at login, ask the leader for my tickets again, so a reply or a
+-- close that went astray comes in (it marks the ticket unread, and the !
+-- by the minimap shows it).
+function ns.AskTickets()
+	local leader, online = ns.Leader()
+	if not leader or not online or IsGuildLeader() then return end
+	ns.FolkQueue("FL", leader)
 end
 
 -- Anyone ----------------------------------------------------------------

@@ -268,16 +268,27 @@ function ns.ToLeader(kind, head, text)
 end
 
 -- Leader to a member, kept on the leader's account while they are offline.
+-- Sent once they have been online a minute (Zach 14/11: replies to a
+-- ticket sent at the moment a member logged in arrived before their addon
+-- was listening and were lost); dropped only when they have left the
+-- guild, never while the roster is still loading.
+local WARM = 60
+local onlineSince = {}
 local function FlushTo()
-	if not IsGuildLeader() or not ns.db then return end
+	if not IsGuildLeader() or not ns.db or not ns.RosterNames() then return end
 	local f = F()
 	for name, list in pairs(f.to) do
 		local online = ns.Online(name)
 		if online == nil then
 			f.to[name] = nil
-		elseif online then
-			f.to[name] = nil
-			for _, msg in ipairs(list) do Queue(msg, name) end
+		elseif not online then
+			onlineSince[name] = nil
+		else
+			onlineSince[name] = onlineSince[name] or GetTime()
+			if GetTime() - onlineSince[name] >= WARM then
+				f.to[name] = nil
+				for _, msg in ipairs(list) do Queue(msg, name) end
+			end
 		end
 	end
 end
@@ -1103,11 +1114,14 @@ events:SetScript("OnEvent", function(_, event)
 		end
 		C_Timer.After(35, function()
 			if not ns.InOurGuild() then return end
-			if IsGuildLeader() then Serve() else ns.Send("FQ") end
+			if IsGuildLeader() then Serve() else
+				ns.Send("FQ")
+				if ns.AskTickets then ns.AskTickets() end
+			end
 		end)
 		C_Timer.NewTicker(15, function()
 			if not ns.InOurGuild() then return end
-			if IsGuildLeader() then MakeRound() end
+			if IsGuildLeader() then MakeRound() FlushTo() end
 			-- Open ballots still missing candidates.
 			for _, b in pairs(F().ballots) do
 				if ns.Now() < b.ends then ns.AskBallot(b) end

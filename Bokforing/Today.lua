@@ -111,7 +111,7 @@ local function Candidates()
 		if r.recipe.by[me] and r.profit and r.profit > 0 and r.sold and r.sold >= 0.5 and r.cost then
 			local item, qty = r.recipe.item, r.recipe.qty or 1
 			local want = math.min(MAX_CRAFTS * qty, math.max(1, math.floor(r.sold * SHARE + 0.5)))
-			local have, up = ns.Have(item), ns.OnAH(item)
+			local have, up = ns.Sellable(item), ns.OnAH(item)
 			local each = r.profit / qty
 			local when = When(item)
 			if have > 0 then
