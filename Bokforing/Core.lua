@@ -256,7 +256,12 @@ local function ReadMerchant()
 			local each = price / math.max(quantity or 1, 1)
 			if (available or -1) < 0 then
 				ns.db.vendor[item] = each
-				local npc, zone = UnitName("npc") or "?", GetZoneText and GetZoneText() or "?"
+				-- In an instance Forever makes the vendor's name secret (Zach 21/11, a
+				-- vendor in Blackrock Depths: comparing it errored); keep it as "?".
+				local npc, zone = UnitName("npc"), GetZoneText and GetZoneText()
+				if issecretvalue and issecretvalue(npc) then npc = nil end
+				if issecretvalue and issecretvalue(zone) then zone = nil end
+				npc, zone = npc or "?", zone or "?"
 				local at = ns.db.vendorAt[item]
 				if not at or at.npc ~= npc or at.zone ~= zone then ns.db.vendorAt[item] = { npc = npc, zone = zone } end
 			end

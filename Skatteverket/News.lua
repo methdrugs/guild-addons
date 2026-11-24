@@ -12,7 +12,19 @@ local _, ns = ...
 -- enough, "restart" when the release adds files the game only reads at
 -- start; shown in red under the version.
 ns.NOTES = {
-	{ "0.34.3", "2026-11-14", after = "reload", {
+	{ "0.34.7", "2026-11-24", after = "reload", {
+		"Chatten: loggar guildledaren ut och guildlistan inte hunnit märka det, får du inte längre rad efter rad med No player named … is currently playing. Addonet döljer raden, väntar fem minuter och skickar det som inte kom fram när guildledaren är tillbaka.",
+		"Bokföring 0.7.2: att öppna en vendor inne i en instans (till exempel Blackrock Depths) ger inte längre ett felmeddelande.",
+	} },
+	{ "0.34.6", "2026-11-16", after = "reload", {
+		"Arbetsorder: du skriver hur många du vill ha, inte hur många gånger det ska tillverkas. Ger ett recept fler än en (Aquadynamic Fish Attractor ger 3) räknar addonet ut tillverkningarna och visar vad du får, till exempel = 21 st (7 tillverkningar à 3).",
+		"Arbetsorder: överallt där en order syns står nu både tillverkningar och antal när ett recept ger fler än en, till exempel x20 (60 st).",
+	} },
+	{ "0.34.5", "2026-11-15", after = "reload", {
+		"Folkvald representant: raden du håller musen över lyser upp, både under Representanter och Medlemmar.",
+	} },
+	{ "0.34.4", "2026-11-14", after = "reload", {
+		"Medlemmar: sortera på Klass, Level och Skattenr också, inte bara Namn och Senast sedd. Klicka på samma rubrik igen för omvänd ordning. Sorteringen sker fortfarande inom varje rank.",
 		"Folkvald representant: fastnar en omröstning på Hämtar kandidaterna… frågar addonet guildledaren igen efter just den omröstningen, tills alla kandidater kommit. Guildledaren skickar också lugnare, så att inget tappas på vägen.",
 		"Kontakta oss!: svar och avslutade ärenden som skickades medan du var offline kommer nu fram. När du loggar in hämtas dina ärenden igen, och har något hänt syns ett ! vid minimapknappen.",
 		"Bokföring 0.7.1: Today föreslår inte längre att du lägger ut saker som är bundna till dig, och räknar inte med dem när den föreslår hur många du ska tillverka.",

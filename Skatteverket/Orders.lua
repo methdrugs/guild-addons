@@ -138,6 +138,22 @@ local function RecipeName(key)
 	return ns.RecipeName and ns.RecipeName(key) or key
 end
 
+-- How many one craft makes, 1 while unknown. An order counts crafts (as
+-- it travels, so older clients read it the same); where it shows, the
+-- items come too (Zach 16/11: x20 Aquadynamic Fish Attractor was 20
+-- crafts, 60 attractors, and nobody could tell).
+local function Makes(key)
+	local d = ns.RecipeData and ns.RecipeData(key)
+	return d and d.makes or 1
+end
+
+-- "x20", or "x20 (60 st)" when a craft makes more than one.
+local function CountText(key, crafts)
+	local makes = Makes(key)
+	if makes > 1 then return string.format("x%d (%d st)", crafts, crafts * makes) end
+	return "x" .. crafts
+end
+
 -- His own order declined or run out (Zach 11/11: a chat line was easy to
 -- miss): on the bolt's ! until he has opened it.
 local function Unnoticed(o)
@@ -158,8 +174,8 @@ function ns.OrderNotices()
 	for _, o in pairs(Orders()) do
 		if Unnoticed(o) then
 			local text = State(o) == "avböjd"
-				and string.format("%s avböjde din order %s x%d%s", o.to:match("^(%S+)"), RecipeName(o.key), o.count, o.reason and (" (" .. o.reason .. ")") or "")
-				or string.format("Din order %s x%d till %s gick ut", RecipeName(o.key), o.count, o.to:match("^(%S+)"))
+				and string.format("%s avböjde din order %s %s%s", o.to:match("^(%S+)"), RecipeName(o.key), CountText(o.key, o.count), o.reason and (" (" .. o.reason .. ")") or "")
+				or string.format("Din order %s %s till %s gick ut", RecipeName(o.key), CountText(o.key, o.count), o.to:match("^(%S+)"))
 			table.insert(out, { text = text, click = function() ns.ShowOrder(o) end })
 		end
 	end
@@ -296,12 +312,12 @@ function ns.PlaceOrder(to, key, count, mats, days, note, raw, steps, deliver)
 	-- With a recipient, both are named, so Discord reaches both and an
 	-- older client still sees where it goes (Zach 11/11).
 	if o.deliver then
-		SendChatMessage(string.format("@%s du har en ny arbetsorder: %s x%d! Skicka det färdiga till @%s. Titta under Arbetsorder i Yrken (/yrken).",
-			to, RecipeName(key), count, o.deliver), "GUILD")
+		SendChatMessage(string.format("@%s du har en ny arbetsorder: %s %s! Skicka det färdiga till @%s. Titta under Arbetsorder i Yrken (/yrken).",
+			to, RecipeName(key), CountText(key, count), o.deliver), "GUILD")
 	else
-		SendChatMessage(string.format("@%s du har en ny arbetsorder: %s x%d! Titta under Arbetsorder i Yrken (/yrken).", to, RecipeName(key), count), "GUILD")
+		SendChatMessage(string.format("@%s du har en ny arbetsorder: %s %s! Titta under Arbetsorder i Yrken (/yrken).", to, RecipeName(key), CountText(key, count)), "GUILD")
 	end
-	ns.Print(string.format("arbetsorder skickad till %s: %s x%d%s.", to, RecipeName(key), count, o.deliver and (", det färdiga till " .. o.deliver) or ""))
+	ns.Print(string.format("arbetsorder skickad till %s: %s %s%s.", to, RecipeName(key), CountText(key, count), o.deliver and (", det färdiga till " .. o.deliver) or ""))
 	if mats == "h" then ns.Print("postförskott: " .. PayText(o) .. ".") end
 	-- Sending the materials (Zach 9/11): Bokföring lists what to buy.
 	-- Raw materials go on the list in all, not per craft (Zach 10/11).
@@ -343,8 +359,8 @@ local function MoveSent(o)
 		if #moved > 0 then
 			other.stamp = ns.Now()
 			Share(other, table.concat({ "L", other.id, EncodeSent(other.sent), other.stamp }, ";"))
-			ns.Print(string.format("material från den avbrutna ordern räknas nu på %s x%d till %s: %s.",
-				ns.RecipeName and ns.RecipeName(other.key) or other.key, other.count, other.to, table.concat(moved, ", ")))
+			ns.Print(string.format("material från den avbrutna ordern räknas nu på %s %s till %s: %s.",
+				RecipeName(other.key), CountText(other.key, other.count), other.to, table.concat(moved, ", ")))
 		end
 	end
 end
@@ -390,10 +406,10 @@ end
 local function Tell(o, old)
 	local me = ns.Me()
 	if o.to == me and not old then
-		ns.Print(string.format("ny arbetsorder från %s: %s x%d, %s.%s%s Titta under Arbetsorder i Yrken.", o.from, RecipeName(o.key), o.count, MATS[o.mats] or "?",
+		ns.Print(string.format("ny arbetsorder från %s: %s %s, %s.%s%s Titta under Arbetsorder i Yrken.", o.from, RecipeName(o.key), CountText(o.key, o.count), MATS[o.mats] or "?",
 			o.deliver and (" Skicka det färdiga till " .. o.deliver .. ".") or "", o.mats == "h" and (" Postförskott: " .. PayText(o) .. ".") or ""))
 	elseif o.from == me and old and old.state ~= o.state then
-		ns.Print(string.format("%s: din arbetsorder %s x%d är nu %s%s.", o.to, RecipeName(o.key), o.count, STATE[o.state]:lower(),
+		ns.Print(string.format("%s: din arbetsorder %s %s är nu %s%s.", o.to, RecipeName(o.key), CountText(o.key, o.count), STATE[o.state]:lower(),
 			o.reason and o.reason ~= "" and (" (" .. o.reason .. ")") or ""))
 	end
 end
@@ -494,9 +510,23 @@ end
 
 -- The line under the crafter's choice: the C.O.D., material + 10 % (Zach
 -- 12/11), where the prices are known; without them the crafter sets it.
+-- The crafts for the number of items typed, whole crafts rounded up
+-- (Zach 16/11: the order asks how many you want, not how many crafts).
+local function DialogCrafts()
+	local n = math.max(tonumber(dialog.count:GetText()) or 1, 1)
+	return math.ceil(n / Makes(dialog.key))
+end
+
+-- Beside Antal, when a craft makes more than one: what you will get.
+local function MakesText()
+	local makes = Makes(dialog.key)
+	if makes <= 1 then return "" end
+	local crafts = DialogCrafts()
+	return string.format("= %d st (%d tillverkning%s à %d)", crafts * makes, crafts, crafts == 1 and "" or "ar", makes)
+end
+
 local function TipText()
-	local count = tonumber(dialog.count:GetText()) or 1
-	local cost = ReagentCost(dialog.key, math.max(count, 1))
+	local cost = ReagentCost(dialog.key, DialogCrafts())
 	if not cost then return "inget pris känt: inget postförskott, hantverkaren sätter det själv" end
 	return string.format("postförskott ungefär %s (material %s + 10 %%)", ns.Money(cost + math.floor(cost * TIP)), ns.Money(cost))
 end
@@ -515,7 +545,7 @@ local function UpdateCost()
 	dialog.cost:SetShown(sending)
 	dialog.tip:SetShown(dialog.mats ~= "e")
 	if not sending then return end
-	local count = math.max(tonumber(dialog.count:GetText()) or 1, 1)
+	local count = DialogCrafts()
 	local list = {}
 	if dialog.mats == "e" and dialog.raw and dialog.rawBox:GetChecked() then
 		for _, r in ipairs(dialog.raw) do table.insert(list, { itemID = r.itemID, count = r.count }) end
@@ -527,7 +557,7 @@ local function UpdateCost()
 end
 
 local function UpdateRaw()
-	local count = math.max(tonumber(dialog.count:GetText()) or 1, 1)
+	local count = DialogCrafts()
 	local raw, steps
 	if dialog.mats == "e" and ns.RawPlan then raw, steps = ns.RawPlan(dialog.to, dialog.key, count) end
 	dialog.raw, dialog.steps = raw, steps
@@ -599,7 +629,10 @@ local function BuildDialog()
 	dialog.count:SetAutoFocus(false)
 	dialog.count:SetNumeric(true)
 	dialog.count:SetMaxLetters(3)
+	dialog.makes = dialog:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	dialog.makes:SetPoint("LEFT", dialog.count, "RIGHT", 8, 0)
 	dialog.count:SetScript("OnTextChanged", function()
+		dialog.makes:SetText(MakesText())
 		if dialog.theirs then dialog.tip:SetText(TipText()) end
 		if dialog.rawBox then UpdateRaw() end
 	end)
@@ -704,7 +737,7 @@ local function BuildDialog()
 			if problem then dialog.warn:SetText(problem) return end
 			if deliver == dialog.to then dialog.warn:SetText("Skicka till kan inte vara hantverkaren själv.") return end
 		end
-		ns.PlaceOrder(dialog.to, dialog.key, count, dialog.mats, dialog.days, dialog.note:GetText(), raw and dialog.raw or nil, raw and dialog.steps or nil, deliver)
+		ns.PlaceOrder(dialog.to, dialog.key, DialogCrafts(), dialog.mats, dialog.days, dialog.note:GetText(), raw and dialog.raw or nil, raw and dialog.steps or nil, deliver)
 		dialog:Hide()
 	end)
 	dialog:Hide()
@@ -719,7 +752,8 @@ function ns.OrderDialog(to, key)
 	if dialog.SetPortraitToAsset then dialog:SetPortraitToAsset(icon)
 	elseif dialog.portraitTexture then dialog.portraitTexture:SetTexture(icon) end
 	dialog.recipe:SetText(RecipeName(key))
-	dialog.count:SetText("1")
+	-- One craft's worth to start with, so the box never asks for less.
+	dialog.count:SetText(tostring(Makes(key)))
 	dialog.own:SetChecked(false)
 	dialog.theirs:SetChecked(false)
 	dialog.tip:SetText(TipText())
@@ -933,7 +967,7 @@ local function FillMail(o, crafts)
 	if MailFrameTab_OnClick then MailFrameTab_OnClick(nil, 2) end
 	local to = crafts and CraftsTo(o) or o.to
 	SendMailNameEditBox:SetText(to)
-	if SendMailSubjectEditBox then SendMailSubjectEditBox:SetText(string.format("Arbetsorder: %s x%d", RecipeName(o.key), o.count)) end
+	if SendMailSubjectEditBox then SendMailSubjectEditBox:SetText(string.format("Arbetsorder: %s %s", RecipeName(o.key), CountText(o.key, o.count))) end
 	-- In the materials letter too (Zach 11/11), so the crafter sees it there.
 	local body = MailBody()
 	if body then
@@ -959,7 +993,7 @@ StaticPopupDialogs["SKATTEVERKET_CANCEL_ORDER"] = {
 }
 
 local function ConfirmCancel(o, done)
-	StaticPopup_Show("SKATTEVERKET_CANCEL_ORDER", string.format("%s x%d", RecipeName(o.key), o.count), o.to, { done = done })
+	StaticPopup_Show("SKATTEVERKET_CANCEL_ORDER", string.format("%s %s", RecipeName(o.key), CountText(o.key, o.count)), o.to, { done = done })
 end
 
 -- The order itself (member feedback 10/11): clicked open from the list,
@@ -1079,7 +1113,7 @@ ShowOrder = function(o)
 	if view.SetPortraitToAsset then view:SetPortraitToAsset(icon) elseif view.portraitTexture then view.portraitTexture:SetTexture(icon) end
 	view.item.icon:SetTexture(icon)
 	local link = ns.RecipeChatLink(o.key)
-	view.item.text:SetText(string.format("%s x%d", link or RecipeName(o.key), o.count))
+	view.item.text:SetText(string.format("%s %s", link or RecipeName(o.key), CountText(o.key, o.count)))
 	local lines = {
 		"|cffffd100Beställd:|r " .. date("%d/%m %H:%M", o.at or o.stamp),
 		string.format("|cffffd100Från:|r %s   |cffffd100Till:|r %s", o.from, o.to),
@@ -1200,7 +1234,7 @@ local function Delivered(target, items, prefer)
 		if #counted > 0 then
 			o.stamp = ns.Now()
 			Share(o, table.concat({ "L", o.id, EncodeSent(o.sent), o.stamp }, ";"))
-			ns.Print(string.format("material till %s för %s x%d: %s.", o.to, RecipeName(o.key), o.count, table.concat(counted, ", ")))
+			ns.Print(string.format("material till %s för %s %s: %s.", o.to, RecipeName(o.key), CountText(o.key, o.count), table.concat(counted, ", ")))
 			Changed()
 			if ns.RefreshOrderView then ns.RefreshOrderView(o) end
 		end
@@ -1257,7 +1291,7 @@ tracker:SetScript("OnEvent", function(_, event, a, b)
 			if o.craftsSent >= c.need then
 				SetState(o, "klar")
 				craftsFor = nil
-				ns.Print(string.format("allt det färdiga har gått till %s; arbetsordern %s x%d är Klar.", CraftsTo(o), RecipeName(o.key), o.count))
+				ns.Print(string.format("allt det färdiga har gått till %s; arbetsordern %s %s är Klar.", CraftsTo(o), RecipeName(o.key), CountText(o.key, o.count)))
 				if ns.RefreshOrderView then ns.RefreshOrderView(o) end
 			else
 				ns.Print(string.format("%d av %d skickade till %s; fyll i nästa brev.", o.craftsSent, c.need, CraftsTo(o)))
@@ -1432,7 +1466,7 @@ function ns.BuildOrders(parent)
 			local o = self.order
 			if not o then return end
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-			GameTooltip:AddLine(string.format("%s x%d", RecipeName(o.key), o.count))
+			GameTooltip:AddLine(string.format("%s %s", RecipeName(o.key), CountText(o.key, o.count)))
 			GameTooltip:AddLine(string.format("Från %s till %s", o.from, o.to), 1, 1, 1)
 			GameTooltip:AddLine(MATS[o.mats] or "?", 1, 1, 1)
 			local pay = PayText(o)
@@ -1544,7 +1578,7 @@ function ns.RefreshOrders()
 			row.icon:SetTexture((d and d.icon) or "Interface\\Icons\\INV_Misc_QuestionMark")
 			row.icon:SetDesaturated(not OPEN[state] and state ~= "klar")
 			row.icon:Show()
-			row.cells[1]:SetText(string.format("%s%s x%d|r", (OPEN[state] or state == "klar") and "|cffffffff" or "|cff808080", RecipeName(o.key), o.count))
+			row.cells[1]:SetText(string.format("%s%s %s|r", (OPEN[state] or state == "klar") and "|cffffffff" or "|cff808080", RecipeName(o.key), CountText(o.key, o.count)))
 			-- The other party; the crafter in green once they have accepted.
 			-- First names fit (Zach 10/11); the full name is in the tooltip.
 			local who = (line.incoming and o.from or o.to):match("^(%S+)")

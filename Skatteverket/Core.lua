@@ -46,7 +46,7 @@
 local _, ns = ...
 
 ns.GUILD = "THÖNDERSTÖRM"
-ns.VERSION = "0.34.3"
+ns.VERSION = "0.34.7"
 -- The parts inside Skatteverket with their own number (Zach 12/11), raised
 -- only when that part changes; shown under THÖNDERSTÖRM in Nytt. The
 -- release's notes name it: "Yrken 0.4: ...".
@@ -150,11 +150,30 @@ function ns.RequestRoster()
 	end
 end
 
+-- Names whispered in the last seconds, and names the game answered "No
+-- player named X is currently playing" for (Zach 24/11: a member's roster
+-- still showed the leader online after logout, and every whisper put that
+-- line in the member's chat). Such a name counts as offline for 5 minutes,
+-- or until the roster itself shows it offline.
+local whisperedAt, notPlaying = {}, {}
+local NOT_PLAYING_FOR = 300
+
+local function Reachable(who, online)
+	if not online then
+		notPlaying[who] = nil
+		return false
+	end
+	return not (notPlaying[who] and GetTime() - notPlaying[who] < NOT_PLAYING_FOR)
+end
+
 -- The guild master's name and whether they are online, or nil before the roster loads.
 function ns.Leader()
 	for i = 1, GetNumGuildMembers() do
 		local name, _, rankIndex, _, _, _, _, _, online = GetGuildRosterInfo(i)
-		if rankIndex == 0 and name then return ns.Short(name), online and true or false end
+		if rankIndex == 0 and name then
+			name = ns.Short(name)
+			return name, Reachable(name, online)
+		end
 	end
 end
 
@@ -162,7 +181,7 @@ end
 function ns.Online(who)
 	for i = 1, GetNumGuildMembers() do
 		local name, _, _, _, _, _, _, _, online = GetGuildRosterInfo(i)
-		if name and ns.Short(name) == who then return online and true or false end
+		if name and ns.Short(name) == who then return Reachable(who, online) end
 	end
 end
 
@@ -241,8 +260,38 @@ function ns.SendTo(target, msg)
 	elseif SendAddonMessage then
 		SendAddonMessage(ns.PREFIX, msg, "WHISPER", target)
 	end
+	whisperedAt[target] = GetTime()
 	return true
 end
+
+-- The name in the game's "No player named X is currently playing", if
+-- Skatteverket whispered X in the last 10 seconds.
+local function NotPlaying(text)
+	if issecretvalue and issecretvalue(text) then return end
+	if type(text) ~= "string" or not ERR_CHAT_PLAYER_NOT_FOUND_S then return end
+	local now = GetTime()
+	for name, at in pairs(whisperedAt) do
+		if now - at > 10 then
+			whisperedAt[name] = nil
+		elseif text == string.format(ERR_CHAT_PLAYER_NOT_FOUND_S, name) then
+			return name
+		end
+	end
+end
+
+-- Hidden from chat; the name counts as offline, and the amounts for the
+-- leader go again when the leader is really back.
+if ChatFrame_AddMessageEventFilter then
+	ChatFrame_AddMessageEventFilter("CHAT_MSG_SYSTEM", function(_, _, text) return NotPlaying(text) ~= nil end)
+end
+local notPlayingEvents = CreateFrame("Frame")
+notPlayingEvents:RegisterEvent("CHAT_MSG_SYSTEM")
+notPlayingEvents:SetScript("OnEvent", function(_, _, text)
+	local name = NotPlaying(text)
+	if not name then return end
+	notPlaying[name] = GetTime()
+	if name == ns.Leader() then privateDirty = true end
+end)
 
 -- Standing from how long a debt has stood unpaid: no debt, or a debt
 -- younger than 48 hours, is good; up to a week neutral; then negative.

@@ -21,6 +21,26 @@ local function Text(parent, template, ...)
 	return fs
 end
 
+-- The whole row lights up while the mouse is on it (Zach 15/11), also over
+-- its buttons; skip(row) true leaves it dark (Medlemmar's rank headings).
+local function Highlight(row, skip)
+	local band = row:CreateTexture(nil, "BACKGROUND")
+	band:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+	band:SetBlendMode("ADD")
+	band:SetAllPoints()
+	band:Hide()
+	row.highlight = band
+	local function Update()
+		band:SetShown(row:IsMouseOver() and not (skip and skip(row)))
+	end
+	row.UpdateHighlight = Update
+	for _, f in ipairs({ row, row:GetChildren() }) do
+		f:HookScript("OnEnter", Update)
+		f:HookScript("OnLeave", Update)
+	end
+	row:HookScript("OnHide", function() band:Hide() end)
+end
+
 local function Button(parent, label, width, onClick)
 	local b = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
 	b:SetSize(width, 22)
@@ -491,6 +511,7 @@ function ns.BuildFolk(parent)
 		GameTooltip:Show()
 	end)
 	page.leaderRow:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	Highlight(page.leaderRow)
 	for i, role in ipairs(ns.ROLES) do
 		local row = Row(i, role)
 		row.withdraw = Button(row, "Dra tillbaka", 100)
@@ -513,6 +534,7 @@ function ns.BuildFolk(parent)
 			GameTooltip:Show()
 		end)
 		row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+		Highlight(row)
 		page.rows[i] = row
 	end
 
@@ -627,14 +649,27 @@ end
 -- level, rank, the Folkvald representant role held (in the professions'
 -- place, Zach 14/11; they are on hover), skattenummer and last seen,
 -- never any amounts.
--- Sorted by name, rank or last seen; a main and its alts move together,
--- by the main's name and rank and the latest any of them was seen.
+-- Sorted within each rank by name, class, level, skattenummer or last
+-- seen (class, level and skattenummer by a member's request, Zach 14/11);
+-- a second click on the same column turns the order around. A main and
+-- its alts move together, by the main's values and the latest any of
+-- them was seen; who has no value stands last either way.
 local MEMBER_ROWS, MEMBER_H = 28, 16
 local MEMBER_COLS = {
-	{ "Namn", 170, "name" }, { "Klass", 80 }, { "Level", 40 }, { "Rank", 100 },
-	{ "Representant", 200 }, { "Skattenr", 66 }, { "Senast sedd", 76, "seen" },
+	{ "Namn", 170, "name" }, { "Klass", 80, "class" }, { "Level", 40, "level" }, { "Rank", 100 },
+	{ "Representant", 200 }, { "Skattenr", 66, "number" }, { "Senast sedd", 76, "seen" },
 }
-local memberList, memberOffset, memberSort = {}, 0, "name"
+local memberList, memberOffset, memberSort, memberDesc = {}, 0, "name", false
+
+-- What a main's group sorts on, or nil when it has none.
+local function SortValue(g)
+	local r = g.r
+	if memberSort == "class" then return r.class ~= "" and r.class or nil end
+	if memberSort == "level" then return r.level > 0 and r.level or nil end
+	if memberSort == "number" then return r.m and (r.m.number or 0) > 0 and r.m.number or nil end
+	if memberSort == "seen" then return g.away end
+	return r.name
+end
 
 -- Seconds since the character was online (0 while online), from the
 -- roster or the last time this client heard from them, whichever is later.
@@ -734,10 +769,16 @@ local function BuildList()
 		table.insert(groups, g)
 	end
 	for _, g in ipairs(groups) do g.order, g.section = Section(g.r) end
-	local never = math.huge
+	for _, g in ipairs(groups) do g.sortValue = SortValue(g) end
 	table.sort(groups, function(x, y)
 		if x.order ~= y.order then return x.order < y.order end
-		if memberSort == "seen" and (x.away or never) ~= (y.away or never) then return (x.away or never) < (y.away or never) end
+		local a, b = x.sortValue, y.sortValue
+		if a ~= b then
+			if a == nil then return false end
+			if b == nil then return true end
+			if memberDesc then return a > b end
+			return a < b
+		end
 		return x.r.name < y.r.name
 	end)
 	wipe(memberList)
@@ -778,13 +819,15 @@ RefreshMembers = function()
 		else
 			row:Hide()
 		end
+		-- Scrolling moves another member, or a heading, under the mouse.
+		if row:IsShown() then row.UpdateHighlight() end
 	end
 	for _, h in ipairs(members.headers) do
 		if h.key == memberSort then h.text:SetTextColor(1, 1, 1) else h.text:SetTextColor(1, 0.82, 0) end
 	end
 	local shown = #memberList > MEMBER_ROWS and string.format("Visar %d-%d av %d (scrolla). ", memberOffset + 1,
 		math.min(memberOffset + MEMBER_ROWS, #memberList), #memberList) or ""
-	members.count:SetText(shown .. string.format("%d medlemmar, %d karaktärer; efter rank, alts under sin huvudkaraktär. Klicka på Namn eller Senast sedd för att sortera inom varje rank.",
+	members.count:SetText(shown .. string.format("%d medlemmar, %d karaktärer; efter rank, alts under sin huvudkaraktär. Klicka på en rubrik för att sortera inom varje rank, igen för omvänd ordning.",
 		people, #memberList - headings))
 end
 
@@ -805,6 +848,8 @@ function ns.BuildMembers(parent)
 		if h.key then
 			h:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
 			h:SetScript("OnClick", function()
+				-- Level starts highest first, the others A-Ö or lowest first.
+				if memberSort == h.key then memberDesc = not memberDesc else memberDesc = h.key == "level" end
 				memberSort, memberOffset = h.key, 0
 				RefreshMembers()
 			end)
@@ -839,6 +884,7 @@ function ns.BuildMembers(parent)
 			GameTooltip:Show()
 		end)
 		row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+		Highlight(row, function(self) return not self.r or self.r.header end)
 		members.rows[i] = row
 	end
 	members.count = Text(members, "GameFontDisableSmall", "BOTTOMLEFT", 24, 34)
